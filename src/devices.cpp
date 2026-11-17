@@ -109,6 +109,7 @@ std::vector<DeviceStatus> PollAllDevices() {
     PollHyperX(ctx);
     PollLogitechG435(ctx);  // before the HID++ driver, which shares the vendor id
     PollAstro(ctx);
+    PollG435(ctx);  // G435 on the older 046D:0ACB Realtek receiver
     PollLogitech(ctx);
     PollRazer(ctx);
     PollSteelSeriesElite(ctx);

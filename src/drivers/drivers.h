@@ -135,6 +135,8 @@ void PollKysona(PollContext& ctx);    // also Pulsar, ATK / VXE, Hitscan Hyperli
 void PollHyperX(PollContext& ctx);
 void PollLogitechG435(PollContext& ctx);  // G435 headset on the 046D:0ADF dongle (not HID++)
 void PollAstro(PollContext& ctx);  // A50 X / Gen 5 vendor protocol (before generic Logitech)
+void PollG435(PollContext& ctx);     // Logitech G435 on the Realtek receiver 046D:0ACB (read every 30 min)
+void G435RequestRead();               // make the next poll read the G435 now ("Refresh now")
 void PollLogitech(PollContext& ctx);
 void PollRazer(PollContext& ctx);
 void PollSteelSeries(PollContext& ctx);

@@ -283,7 +283,8 @@ bool PollLogitechDevice(PollContext& ctx, USHORT pid, const std::vector<const Hi
         s.graceSec = idx == 0xFF ? 0 : 1800;  // receiver devices drop off the link while sleeping
         s.kind = passthrough ? DeviceKind::Mouse : GuessKind(s.name);
 
-        int r = h.Request(idx, 0x00, 0x10 | kSwId, { 0, 0, 0x5A }, p, err, false, 400);
+        // A device that is asleep can take 400-700 ms to wake and answer the first ping.
+        int r = h.Request(idx, 0x00, 0x10 | kSwId, { 0, 0, 0x5A }, p, err, false, idx == 0xFF ? 400 : 1200);
         bool found = false;
         if (r == 1 && p.size() >= 3 && p[0] >= 2) {
             ReadNameAndType20(h, idx, s);

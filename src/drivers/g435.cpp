@@ -15,12 +15,16 @@
 //
 // The headset reports no charging state (the GRS status byte and ATB 0 read the same on and off
 // the charger). Plugging the charger in raises the cell voltage by about 180-250 mV within
-// seconds and unplugging drops it by about the same, while normal use moves it by tens of mV
-// between reads. So a jump between two reads sets or clears an estimated charging flag. The last
-// voltage and flag are kept in the registry, so the comparison also works across restarts.
+// seconds, while normal use moves it by tens of mV between reads. So a rise of 100 mV between two
+// reads sets an estimated charging flag. Unplugging a half-charged headset drops it by about as
+// much, but near full the charger holds the cell at about 4.2 V with little current, so unplugging
+// it then drops only 50-80 mV. Charging never lowers the voltage, so any fall of 40 mV clears the
+// flag, and it also expires 3 hours after it was set (a full charge takes less). The last voltage,
+// flag and start time are kept in the registry, so the comparison also works across restarts.
 #include "drivers.h"
 
 #include <atomic>
+#include <ctime>
 
 namespace {
 
@@ -37,7 +41,9 @@ ULONGLONG g_lastAttempt = 0;
 bool g_charging = false;        // estimated from voltage jumps
 bool g_loaded = false;          // saved state read from the registry
 
-constexpr int kJumpMv = 100;    // a change this big between two reads means plugged / unplugged
+constexpr int kJumpMv = 100;    // a rise this big between two reads means plugged in
+constexpr int kDropMv = 40;     // a fall this big means unplugged (readings wobble by about 20 mV)
+constexpr long long kChargeMaxSec = 3ll * 60 * 60;
 constexpr int kChargeOffsetMv = 180;
 const wchar_t* kKey = L"Software\\WirelessBattery";
 
@@ -51,18 +57,27 @@ void SaveDword(const wchar_t* name, DWORD v) { RegSetKeyValueW(HKEY_CURRENT_USER
 
 // Updates the charging estimate with a new reading and remembers it for the next comparison.
 void TrackCharging(int mv) {
+    static DWORD since = 0;  // when the charging flag was set (Unix seconds)
     if (!g_loaded) {
         g_loaded = true;
         g_lastMv = (int)LoadDword(L"G435LastMv");
         g_charging = LoadDword(L"G435Charging") != 0;
+        since = LoadDword(L"G435ChargeSince");
     }
+    DWORD now = (DWORD)time(nullptr);
     if (g_lastMv) {
-        if (mv - g_lastMv >= kJumpMv) g_charging = true;
-        else if (g_lastMv - mv >= kJumpMv) g_charging = false;
+        if (mv - g_lastMv >= kJumpMv) {
+            if (!g_charging) since = now;
+            g_charging = true;
+        } else if (g_lastMv - mv >= kDropMv) {
+            g_charging = false;
+        }
     }
+    if (g_charging && (long long)now - since >= kChargeMaxSec) g_charging = false;  // also no start time saved
     g_lastMv = mv;
     SaveDword(L"G435LastMv", (DWORD)mv);
     SaveDword(L"G435Charging", g_charging ? 1 : 0);
+    SaveDword(L"G435ChargeSince", g_charging ? since : 0);
 }
 
 // Generic 3.7 V Li-ion curve: Logitech publishes none for the G435, so the percentage is an

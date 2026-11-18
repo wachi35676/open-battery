@@ -184,7 +184,7 @@ void PollBlackSharkV2Pro2020(PollContext& ctx) {
     constexpr BYTE reply[] = { 0xFF, 0x0F, 0x05, 0xFE, 0x12, 0x04, 0x1F, 0x08, 0x05 };
     constexpr BYTE stale[] = { 0xFF, 0x01, 0x00, 0xFE, 0x12, 0x04, 0x1F, 0x08, 0x05 };
     if (ctx.IsClaimed(vid, pid)) return;
-    auto colls = ctx.Find(vid, pid, [](const HidColl& c) {
+    auto colls = ctx.Find(vid, pid, [&](const HidColl& c) {
         return c.iface == 3 && c.page() == 0xFF00 && c.usage() == 0x0001 && c.featLen() == reportLen;
     });
     for (const HidColl* c : colls) {

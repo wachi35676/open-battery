@@ -12,6 +12,12 @@
 // Every read cuts the headset audio for about a second, so the headset is read at most every
 // 30 minutes (or when "Refresh now" is clicked) and the last value is reported in between.
 // While the headset is off or unlinked, it is retried every 5 minutes.
+//
+// The headset reports no charging state (the GRS status byte and ATB 0 read the same on and off
+// the charger). Plugging the charger in raises the cell voltage by about 180-250 mV within
+// seconds and unplugging drops it by about the same, while normal use moves it by tens of mV
+// between reads. So a jump between two reads sets or clears an estimated charging flag. The last
+// voltage and flag are kept in the registry, so the comparison also works across restarts.
 #include "drivers.h"
 
 #include <atomic>
@@ -28,6 +34,36 @@ bool g_haveReading = false;     // last attempt produced a voltage
 bool g_attempted = false;       // at least one attempt was made in this process
 int g_lastMv = 0;
 ULONGLONG g_lastAttempt = 0;
+bool g_charging = false;        // estimated from voltage jumps
+bool g_loaded = false;          // saved state read from the registry
+
+constexpr int kJumpMv = 100;    // a change this big between two reads means plugged / unplugged
+constexpr int kChargeOffsetMv = 180;
+const wchar_t* kKey = L"Software\\WirelessBattery";
+
+DWORD LoadDword(const wchar_t* name) {
+    DWORD v = 0, sz = sizeof(v);
+    RegGetValueW(HKEY_CURRENT_USER, kKey, name, RRF_RT_REG_DWORD, nullptr, &v, &sz);
+    return v;
+}
+
+void SaveDword(const wchar_t* name, DWORD v) { RegSetKeyValueW(HKEY_CURRENT_USER, kKey, name, REG_DWORD, &v, sizeof(v)); }
+
+// Updates the charging estimate with a new reading and remembers it for the next comparison.
+void TrackCharging(int mv) {
+    if (!g_loaded) {
+        g_loaded = true;
+        g_lastMv = (int)LoadDword(L"G435LastMv");
+        g_charging = LoadDword(L"G435Charging") != 0;
+    }
+    if (g_lastMv) {
+        if (mv - g_lastMv >= kJumpMv) g_charging = true;
+        else if (g_lastMv - mv >= kJumpMv) g_charging = false;
+    }
+    g_lastMv = mv;
+    SaveDword(L"G435LastMv", (DWORD)mv);
+    SaveDword(L"G435Charging", g_charging ? 1 : 0);
+}
 
 // Generic 3.7 V Li-ion curve: Logitech publishes none for the G435, so the percentage is an
 // estimate (the millivolts are exact).
@@ -97,7 +133,7 @@ void PollG435(PollContext& ctx) {
             g_attempted = true;
             g_lastAttempt = now;
             g_haveReading = mv != 0;
-            if (mv) g_lastMv = mv;
+            if (mv) TrackCharging(mv);
         }
     }
     if (!g_haveReading) return;  // headset off or not linked: hide it
@@ -108,6 +144,11 @@ void PollG435(PollContext& ctx) {
     s.via = L"LIGHTSPEED receiver";
     s.kind = DeviceKind::Headset;
     s.millivolts = g_lastMv;
-    s.percent = G435Percent(g_lastMv);
+    // On the charger the cell reads about 180 mV above its resting voltage (measured: 4152 mV
+    // charging, 3972 mV ten seconds after unplugging), so that offset is taken off the estimate.
+    // It also keeps the voltage from passing for "fully charged".
+    s.percent = G435Percent(g_charging ? g_lastMv - kChargeOffsetMv : g_lastMv);
+    s.charging = g_charging;
+    if (g_charging) s.detail = L"charging guessed from voltage";
     ctx.out.push_back(s);
 }

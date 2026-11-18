@@ -15,6 +15,7 @@ bool g_light, g_hover;
 bool g_background;  // opaque rounded plate behind the text, for transparent / restyled taskbars
 bool g_stacked;     // icon above the percentage (menu option, PR #525)
 bool g_vertical;    // the primary taskbar is docked left or right: one block per device, stacked (PR #321)
+bool g_left;        // left end of a centred Windows 11 taskbar instead of next to the tray (menu option)
 std::vector<WidgetItem> g_items;
 std::wstring g_tipText;
 RECT g_lastTray{}, g_lastBar{}, g_lastWidgets{};
@@ -78,9 +79,14 @@ struct Span {
     RECT widgets{};          // bounding rectangle of WidgetsButton (screen coords)
     bool hasTasks = false;
     int tasksRight = 0;      // right edge of the last task button left of the clock (screen x)
+    bool hasStart = false;   // Start button (for the left placement)
+    int startLeft = 0;       // screen x
+    int widgetsRight = 0;    // right edge of the Widgets button, 0 when there is none (screen x)
 };
 std::vector<Span> g_spans;   // guarded by g_wbLock
 bool g_wbMirrors;            // guarded by g_wbLock: measure secondary taskbars too
+bool g_wbLeft;               // guarded by g_wbLock: measure the main taskbar for the left placement
+Span g_primarySpan;          // guarded by g_wbLock: the main taskbar, while g_wbLeft is set
 
 IUIAutomationCondition* StringCondition(IUIAutomation* uia, PROPERTYID prop, const wchar_t* value) {
     VARIANT v;
@@ -147,8 +153,31 @@ Span MeasureSpan(IUIAutomation* uia, HWND bar) {
         if (all) all->Release();
         task->Release();
     }
+    auto first = [&](const wchar_t* id, RECT& r) {
+        IUIAutomationCondition* c = StringCondition(uia, UIA_AutomationIdPropertyId, id);
+        IUIAutomationElement* el = nullptr;
+        bool ok = c && SUCCEEDED(root->FindFirst(TreeScope_Descendants, c, &el)) && el &&
+                  SUCCEEDED(el->get_CurrentBoundingRectangle(&r)) && inBar(r);
+        if (el) el->Release();
+        if (c) c->Release();
+        return ok;
+    };
+    RECT r{};
+    if (first(L"StartButton", r)) s.hasStart = true, s.startLeft = r.left;
+    if (first(L"WidgetsButton", r)) s.widgetsRight = r.right;
     root->Release();
     return s;
+}
+
+// Left placement: the free room between the taskbar's left edge (or the Widgets button, when it sits
+// there) and the Start button. Only a Windows 11 taskbar with centred icons has room there; with
+// left-aligned icons the Start button is at the very left, nothing fits, and the strip stays right.
+bool LeftRoom(const Span& s, const RECT& bar, int widgetsRight, int pad, int& from, int& to) {
+    if (!s.measured || !s.hasStart) return false;
+    from = bar.left + pad;
+    if (widgetsRight > from && widgetsRight < s.startLeft) from = widgetsRight + pad;
+    to = s.startLeft - pad;
+    return to > from;
 }
 
 bool IsXamlTaskbar(HWND bar) {
@@ -192,8 +221,10 @@ DWORD WINAPI WidgetsButtonThread(LPVOID) {
             }
         }
         AcquireSRWLockShared(&g_wbLock);
-        bool mirrors = g_wbMirrors;
+        bool mirrors = g_wbMirrors, left = g_wbLeft;
         ReleaseSRWLockShared(&g_wbLock);
+        Span primary;
+        if (bar && left && uia && IsXamlTaskbar(bar)) primary = MeasureSpan(uia, bar);
         std::vector<Span> spans;
         if (bar && mirrors && uia)
             for (HWND t = FindWindowExW(nullptr, nullptr, L"Shell_SecondaryTrayWnd", nullptr); t;
@@ -205,6 +236,7 @@ DWORD WINAPI WidgetsButtonThread(LPVOID) {
             g_wbRectBar = bar;
         }
         g_spans = std::move(spans);
+        g_primarySpan = primary;
         ReleaseSRWLockExclusive(&g_wbLock);
     }
 }
@@ -623,6 +655,7 @@ void PositionMirror(Mirror& m) {
     if (Dpi() != m.dpi || m.size.cy != bar.bottom - bar.top) PaintMirror(m), g_dpiBar = m.bar;
     int right = 0, minLeft = bar.left;
     bool known = false;
+    Span span;
     // StartAllBack can put a full notification area on each secondary taskbar.
     // Use its left edge, as on the primary taskbar, to clear all of the tray icons.
     HWND tray = FindWindowExW(m.bar, nullptr, L"TrayNotifyWnd", nullptr);
@@ -647,6 +680,7 @@ void PositionMirror(Mirror& m) {
         AcquireSRWLockShared(&g_wbLock);
         for (const auto& s : g_spans)
             if (s.bar == m.bar && s.measured) {
+                span = s;
                 right = s.hasClock ? s.clockLeft : bar.right - Px(8);
                 if (s.hasWidgets && s.widgets.left < right && s.widgets.right > right - m.size.cx - Px(2))
                     right = s.widgets.left;
@@ -663,6 +697,11 @@ void PositionMirror(Mirror& m) {
         ERROR_SUCCESS)
         right -= Px((int)offset);
     int left = right - m.size.cx - Px(2);
+    int from = 0, to = 0;
+    if (g_left && LeftRoom(span, bar, span.widgetsRight, Px(4), from, to) && to - from >= m.size.cx) {
+        left = from;  // left end of this taskbar
+        minLeft = bar.left;
+    }
     g_dpiBar = nullptr;
     if (!known || m.size.cx <= 0 || left < minLeft) { HideMirror(m); return; }
     POINT p{ left, bar.top };
@@ -953,6 +992,15 @@ void SetStacked(bool on) {
     if (g_wnd) Reposition();
 }
 
+void SetLeftSide(bool on) {
+    g_left = on;
+    AcquireSRWLockExclusive(&g_wbLock);
+    g_wbLeft = on;
+    ReleaseSRWLockExclusive(&g_wbLock);
+    if (g_wbWake) SetEvent(g_wbWake);  // measure the Start button now rather than in a few seconds
+    if (g_wnd) Reposition();
+}
+
 void SetMonitorChoice(const std::wstring& choice) {
     g_choice = choice.empty() ? L"all" : choice;
     SyncMirrors();  // adds, removes or hides strips right away
@@ -1018,6 +1066,20 @@ bool Reposition() {
     // Right-to-left Windows (Hebrew, Arabic) mirrors the taskbar: client x runs from the screen's right
     // edge, so a window's client-space left edge is its screen-space right edge.
     bool rtl = GetWindowLongW(g_taskbar, GWL_EXSTYLE) & WS_EX_LAYOUTRTL;
+    RECT wb = WidgetsButtonRect();
+    int left = 0, from = 0, to = 0;
+    bool onLeft = false;
+    if (g_left && !rtl) {
+        AcquireSRWLockShared(&g_wbLock);
+        Span s = g_primarySpan.bar == g_taskbar ? g_primarySpan : Span{};
+        ReleaseSRWLockShared(&g_wbLock);
+        onLeft = LeftRoom(s, bar, wb.right > wb.left ? (int)wb.right : 0, Px(4), from, to) && to - from >= g_size.cx;
+    }
+    if (onLeft) {
+        POINT p{ from, bar.top };
+        ScreenToClient(g_taskbar, &p);
+        left = p.x;
+    } else {
     int edge = rtl ? tr.right : tr.left;  // screen x we sit next to
     // Windows 10: News and Interests / Weather sits immediately left of the tray. The window that hosts it
     // depends on the build: ShellFeedsTaskbarViewWindow on some, DynamicContent2 on others (e.g. 19045,
@@ -1033,13 +1095,12 @@ bool Reposition() {
             if (fr.left < edge && fr.right > fr.left) edge = fr.left;
         }
     // Step past the Widgets button when it sits where we would go.
-    RECT wb = WidgetsButtonRect();
     if (wb.right > wb.left && wb.top < bar.bottom && wb.bottom > bar.top &&
         (rtl ? wb.left < edge + g_size.cx + Px(2) && wb.right > edge : wb.right > edge - g_size.cx - Px(2) && wb.left < edge))
         edge = rtl ? wb.right : wb.left;
     POINT p{ edge, bar.top };
     ScreenToClient(g_taskbar, &p);
-    int left = p.x - g_size.cx - Px(2);
+    left = p.x - g_size.cx - Px(2);
 
 
     // Optional user override in DPI-independent pixels (e.g. for custom padding).
@@ -1058,6 +1119,7 @@ bool Reposition() {
         if (tl.x + (rr.right - rr.left) > left && left > tl.x)
             MoveWindow(g_rebar, tl.x, tl.y, left - tl.x, rr.bottom - rr.top, TRUE);
     }
+    }  // right side
 
     // Keep us above the taskbar's own content (our sibling windows).
     bool covered = GetWindow(g_wnd, GW_HWNDPREV) != nullptr;

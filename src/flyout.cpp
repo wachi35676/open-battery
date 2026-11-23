@@ -441,6 +441,23 @@ void ApplyTheme() {
     DwmSetWindowAttribute(g_wnd, kDwmDarkMode, &dark, sizeof(dark));
     int backdrop = g_model.mica ? kBackdropMica : kBackdropAcrylic;
     DwmSetWindowAttribute(g_wnd, kDwmBackdrop, &backdrop, sizeof(backdrop));
+    SetWindowPos(g_wnd, nullptr, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
+}
+
+// DWM keeps drawing Mica's plain grey fallback (32,32,32) instead of the wallpaper-tinted material
+// (30,32,36 here, as in Settings) unless the backdrop attributes are applied with frame changes that
+// may activate the window: once before it is shown (ApplyTheme) and once more after it is up. Either
+// one alone leaves it grey (found by trying each combination).
+void ReapplyBackdrop() {
+    BOOL dark = g_model.light ? FALSE : TRUE;
+    DwmSetWindowAttribute(g_wnd, kDwmDarkMode, &dark, sizeof(dark));
+    int corners = kCornersRound;
+    DwmSetWindowAttribute(g_wnd, kDwmCorners, &corners, sizeof(corners));
+    MARGINS m{ -1, -1, -1, -1 };
+    DwmExtendFrameIntoClientArea(g_wnd, &m);
+    int backdrop = g_model.mica ? kBackdropMica : kBackdropAcrylic;
+    DwmSetWindowAttribute(g_wnd, kDwmBackdrop, &backdrop, sizeof(backdrop));
+    SetWindowPos(g_wnd, nullptr, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
 }
 
 // Size and place the window next to the anchor, inside the work area of the anchor's monitor.
@@ -649,6 +666,7 @@ bool Show(HINSTANCE inst, const RECT& anchor, const Model& model, Handler handle
     SetForegroundWindow(g_wnd);
     InvalidateRect(g_wnd, nullptr, FALSE);
     UpdateWindow(g_wnd);
+    ReapplyBackdrop();
     if (g_motion) StartTimer();
     return true;
 }

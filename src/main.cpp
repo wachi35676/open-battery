@@ -1112,13 +1112,37 @@ std::vector<DeviceStatus> DemoDevices() {
     return devices;
 }
 
+// `--demo-desk`: one device of each kind that has a place on the click panel's desk, in every state
+// (low, charging, normal), for screenshots of the panel and the taskbar.
+bool g_demoDesk = false;
+
+std::vector<DeviceStatus> DemoDeskDevices() {
+    auto make = [](const wchar_t* key, const wchar_t* name, const wchar_t* via, DeviceKind kind, int pct, bool charging) {
+        DeviceStatus s;
+        s.key = key;
+        s.name = name;
+        s.via = via;
+        s.kind = kind;
+        s.percent = pct;
+        s.charging = charging;
+        return s;
+    };
+    return {
+        make(L"desk:headset", L"Wireless headset", L"LIGHTSPEED receiver", DeviceKind::Headset, 64, false),
+        make(L"desk:mouse", L"Wireless mouse", L"2.4 GHz receiver", DeviceKind::Mouse, 12, false),
+        make(L"desk:keyboard", L"Wireless keyboard", L"Bluetooth", DeviceKind::Keyboard, 81, false),
+        make(L"desk:controller", L"Wireless controller", L"Bluetooth", DeviceKind::Gamepad, 45, true),
+        make(L"desk:phone", L"Phone", L"Phone Link", DeviceKind::Phone, 92, true),
+    };
+}
+
 DWORD WINAPI Worker(LPVOID) {
     // At sign-in a USB receiver may enumerate before its wireless link is ready.
     constexpr DWORD startupPollDelays[] = { 3000, 7000, 15000 };
     size_t startupPoll = 0;
     HANDLE events[2] = { g_stopEvt, g_refreshEvt };
     for (;;) {
-        auto* v = new std::vector<DeviceStatus>(g_demo ? DemoDevices() : PollAllDevices());
+        auto* v = new std::vector<DeviceStatus>(g_demoDesk ? DemoDeskDevices() : g_demo ? DemoDevices() : PollAllDevices());
         if (!PostMessageW(g_hwnd, WM_RESULTS, 0, (LPARAM)v)) delete v;
         DWORD delay = g_pollIntervalMs;
         if (startupPoll < ARRAYSIZE(startupPollDelays)) delay = startupPollDelays[startupPoll++];
@@ -1284,6 +1308,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
                     L"--json   Print a JSON array of devices and battery levels\n"
                     L"--dump   Print every HID collection and device\n"
                     L"--demo   Show sample devices\n"
+                    L"--demo-desk  Show one device of each kind on the desk (for screenshots)\n"
                     L"--quit   Quit a running instance",
                     L"BatteryHub", MB_OK | MB_ICONINFORMATION);
         return 0;
@@ -1305,6 +1330,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     }
     g_inst = inst;
     g_demo = cmdLine && wcsstr(cmdLine, L"--demo");
+    g_demoDesk = cmdLine && wcsstr(cmdLine, L"--demo-desk");
 
     HANDLE mutex = CreateMutexW(nullptr, TRUE, L"Local\\WirelessBatteryTray");
     if (GetLastError() == ERROR_ALREADY_EXISTS) return 0;

@@ -4,7 +4,7 @@ A personal continuation of [BatteryHub](https://github.com/krisgfx9/Wireless-Dev
 
 Battery levels of your wireless mouse, headset, keyboard and controller, right on the Windows taskbar.
 
-![BatteryHub on the taskbar](docs/screenshot.png)
+![The click panel in dark and light mode, with the battery levels on the taskbar below it](docs/images/panel.png)
 
 > **Getting it:** build it from source with `make`, `build.bat` or `build-msvc.cmd` (see [Build](#build)), then run `WirelessBattery.exe` or `BatteryHub.exe`. The [command-line options](#command-line) are below.
 
@@ -14,40 +14,79 @@ Battery levels of your wireless mouse, headset, keyboard and controller, right o
 
 ## Display
 
-**On the taskbar (default):** `🎧 30%  🖱 93%` next to the notification area, drawn with the Windows icon font.
-- **Low battery:** a red number means 15% or less.
-- **Charging:** a blue ⚡ appears next to the number. Once the device is fully charged and still on power, it turns into a green ✓.
-- **Asleep:** dimmed text means the device is asleep and the last known value is shown. Turn off *Dim sleeping devices* in the menu to keep that value at full brightness.
-- **Disconnected (optional):** turn on *Show disconnected devices* to display a dimmed `×` for devices whose driver explicitly reports an offline wireless link. This does not infer disconnection from a missed battery poll; the default remains to hide offline devices.
-- **Two devices of one kind:** with two mice (or two controllers...) both would get the same icon, so each one gets a tiny caption of up to 3 letters in the corner of its icon, taken from its name (`MX`, `PRO`), or a number when the names do not tell them apart. A device that is alone in its kind shows no caption.
-- **Theme:** it follows light/dark mode and DPI scaling.
-- **Click panel and settings (Windows 11 22H2 and later):** a left click opens a panel on Windows' Mica backdrop with every device's battery; a click on a device opens its battery history. A right click (or the panel's settings button) opens the settings window, laid out like the Windows Settings app: Taskbar, Devices (show, order, rename, low battery notification and history per device), General (start with Windows, check interval, history, panel background: Mica, Acrylic or the more transparent Clear glass, language, refresh, exit) and About. Both follow light and dark mode as Windows switches.
-- **Transparent taskbar themes** (e.g. Windhawk's Taskbar Styler): turn on *Background behind taskbar text* in the menu to keep the text readable over the wallpaper.
-- **Several monitors:** the widget shows on every monitor's taskbar, next to its clock, so it stays visible while a game runs fullscreen. *Show the widget on* in the menu picks *All monitors*, *Main monitor only*, or one display (e.g. only *Display 3*).
-- **More display options:** *Icons above percentages* stacks each icon over its level to save width; *Charge rings instead of percentages* draws a ring around each icon that fills with the charge (blue while charging, green when full, red when low); *Brand colors* shows known brands in their color (Razer green, HyperX red, ...) with a small level bar; two devices of the same kind get a tiny caption so they can be told apart; left and right taskbars get a column of devices.
-- **Languages:** English, العربية, Deutsch, Español, فارسی, Français, עברית, 日本語, 한국어, Magyar, Polski, Português (Brasil), Русский, Svenska, Tiếng Việt, Türkçe, Українська, 简体中文 and 繁體中文. The app follows the Windows display language; *Language* in the menu picks another one. See [Translations](#translations) to add or improve a language.
-- **Brand colors:** devices of 15 known brands get their maker's color, with a soft glow and a thin level bar under the
-  percentage: Razer green, Logitech blue, SteelSeries orange, Corsair yellow, HyperX / ROG / ZOWIE red, PlayStation,
-  Xbox, Samsung, Apple, Jabra, JBL, Cooler Master and Steam. Each color has a dark- and a light-taskbar shade. The brand
-  comes from the driver that found the device, then the vendor ID, then the name; colors and rules are in
-  `src/brands.cpp`. Turn it off with *Brand colors* in the menu.
+### On the taskbar
 
-**Tray icons:** one icon per device with the number drawn in it, plus a "Low battery" notification at 15%. The app switches to this automatically when the taskbar is vertical or can't be found.
+![Battery levels on a dark and a light taskbar](docs/images/taskbar.png)
 
-**Custom device names:** open the device submenu and select *Rename device...* to set a name
-(up to 64 characters). The name is shown in the taskbar widget's tooltip/caption,
-tray tooltip and notifications, and the device menu. Use *Reset to original name*
-to restore the driver's name. Names are stored locally in the current user's
-Windows registry (`Software\WirelessBattery`, `DeviceAliases`), using the stable
-device key. Renaming never changes driver matching, protocol queries, or `--list` /
-`--dump` diagnostic output. No account or network access is needed.
+Each device shows Windows' own 3D device icon (headphones, mouse, keyboard, controller, phone, microphone), loaded from
+Windows at the size your display scaling needs, with its level beside it in the same type as the clock.
 
-Hover for details. Click for the menu: every device (click one to hide or show it), display mode, *Refresh now*, *Start with Windows*, and *Exit*. Levels refresh every 60 seconds (*Check battery every* in the menu changes this), and right away when a device is plugged in or the PC wakes up.
+- **Low battery:** the number turns red at 15% or less.
+- **Charging:** a small cable is plugged into the device, with a short pulse along it every few seconds. Once the device is
+  full and still on power, the plug turns green with a check mark. The pulse is skipped when Windows animations are off.
+- **Asleep:** the icon and number fade, showing the last known level. Turn off *Dim sleeping devices* in settings to keep
+  it at full brightness.
+- **Disconnected (optional):** *Show disconnected devices* shows a faded `×` for devices whose driver reports an offline
+  wireless link. A missed reading alone never counts as disconnected.
+- **Two devices of one kind:** each gets a tiny caption under its icon, taken from its name (`MX`, `PRO`) or a number.
+- **Where:** next to the notification area, or *On the left* of a centred Windows 11 taskbar. With several monitors, on
+  every taskbar (so it stays visible while a game runs fullscreen), the main one only, or one display.
+- **Theme:** follows light and dark mode and DPI scaling. On transparent taskbar themes (for example Windhawk's Taskbar
+  Styler), *Background behind the text* keeps the levels readable.
+
+**Tray icons:** one icon per device with the number drawn in it. The app switches to this automatically when the taskbar
+can't be found; you can also choose it in settings.
+
+### Click panel (Windows 11 22H2 and later)
+
+A left click on the levels opens a panel on Windows' Mica backdrop: an isometric desk with your devices on it, each with
+a leader line to its level.
+
+- The headset hangs on its stand, and the mouse, keyboard, controller and phone sit on the desk when you have one. A
+  wired keyboard is drawn without a level.
+- A charging device has a cable plugged in, with a soft pulse of your accent colour running along it; a low one is shown
+  in red.
+- Click a device (or its label) to open its battery history. Devices that have no place on the desk are listed under it.
+- The footer has the summary, *Refresh* and *Settings*. Esc or a click elsewhere closes the panel.
+- *Panel background* in settings picks Mica, Acrylic, or Clear glass, which is more see-through.
+
+### Settings
+
+![The Taskbar and Devices settings pages](docs/images/settings-taskbar.png)
+
+A right click on the levels (or *Settings* in the panel) opens the settings window, laid out like the Windows Settings
+app. Changes apply at once, and it follows light and dark mode as Windows switches.
+
+- **Taskbar:** taskbar widget or tray icons, position, which monitors, background behind the text, and how sleeping and
+  disconnected devices are shown.
+- **Devices:** a card per device to show or hide it, change its place in the order, rename it, set its low battery
+  notification, and open its battery history.
+
+  ![A device card opened on the Devices page](docs/images/settings-devices.png)
+
+- **General:** start with Windows, how often to check, battery history recording, the panel background, language (or
+  add your own), refresh now, and exit.
+
+  ![The General page with the panel background list open](docs/images/settings-general.png)
+
+- **About:** the version and a link to the project.
+
+**Custom device names:** *Rename* on a device's card sets a name of up to 64 characters, shown on the taskbar, in the
+panel, in notifications and in settings; *Reset* restores the driver's name. Names are stored locally
+(`HKCU\Software\WirelessBattery`, `DeviceAliases`) by the stable device key, and never change driver matching or the
+`--list` / `--dump` output.
+
+**Languages:** English, العربية, Deutsch, Español, فارسی, Français, עברית, 日本語, 한국어, Magyar, Polski, Português (Brasil),
+Русский, Svenska, Tiếng Việt, Türkçe, Українська, 简体中文 and 繁體中文. The app follows the Windows display language;
+*Language* in settings picks another one. See [Translations](#translations) to add or improve a language.
+
+Hover the levels for details. Levels refresh every 60 seconds (*Check battery every* in settings changes this), and right
+away when a device is plugged in or the PC wakes up.
 
 ## Smart Battery Alerts (experimental)
 
-You can set a **per-device low-battery notification threshold** from each device's
-submenu: **Battery alerts** → *Use default (15%)*, *Disable notifications*,
+You can set a **per-device low-battery notification threshold** on each device's card in
+**Settings → Devices** → *Low battery notification*: *Default (15%)*, *Off*,
 or one of 5%, 10%, 15%, 20%, 25%, 30%, 35%, 40%. The existing 15% default stays
 unchanged unless you choose an override. Settings are stored by device key in
 the current user's Windows registry (`Software\WirelessBattery`, `AlertThresholds`).
@@ -67,12 +106,12 @@ original global 15% threshold, independently of the notification setting.
 
 ## Battery history & insights
 
-Right-click a device in the taskbar widget or tray menu and choose **Battery history...**.
+Click a device in the click panel, or choose *Battery history → Open* on its card in **Settings → Devices**.
 The native, DPI-aware viewer (it follows the Windows light/dark theme) shows recorded battery levels with connected sample lines over the last **24 hours**, **7 days**, or **30 days**, along with the latest reading, lowest/highest level, change in percentage points, and sample count. You can clear the selected device's history from the viewer.
 
 History is recorded **locally only** for connected, awake devices reporting a numeric percentage. Readings are sampled at most once every 30 minutes per device (except charging-state transitions, with a 60-second minimum). Data is kept for up to 30 days and the local file is kept under about 2 MB. The app never probes hardware beyond its existing polling, sends no history data over the network, and makes a conservative, approximate time-to-empty estimate from recent discharge observations only. At least four points, two hours, a three-percentage-point decline, a fresh reading and a stable discharge segment are required. Charging, old readings or insufficient data suppress the estimate; device-reported runtime is not available. The estimate is not a guarantee. Missing chart data is shown as gaps, not interpolated.
 
-Turn off **Record battery history** in the menu to stop saving readings; what was already saved stays until you clear it in the viewer. The file is stored in `%LOCALAPPDATA%\WirelessBattery\battery_history.tsv`. Its device identities are encoded (not encrypted); the file is local to your Windows account. In `--demo`, the chart uses synthetic data that is never saved. **Note:** history starts collecting only after this feature is installed and the app has been running for a while.
+Turn off **Record battery history** in **Settings → General** to stop saving readings; what was already saved stays until you clear it in the viewer. The file is stored in `%LOCALAPPDATA%\WirelessBattery\battery_history.tsv`. Its device identities are encoded (not encrypted); the file is local to your Windows account. In `--demo`, the chart uses synthetic data that is never saved. **Note:** history starts collecting only after this feature is installed and the app has been running for a while.
 
 ## Supported devices
 
@@ -241,7 +280,7 @@ These reports cover the listed connection modes and behaviors; battery confirmat
 
 1. Build it (see [Build](#build)): `build-msvc.cmd` with Visual Studio, or `make` / `build.bat` with MinGW-w64.
 2. Copy the exe anywhere, for example `%LOCALAPPDATA%\Programs\WirelessBattery\`, and run it. No administrator rights or runtime are needed.
-3. Turn on **Start with Windows** in the right-click menu. For the headsets that use HeadsetControl, put `headsetcontrol.exe` next to the exe; check your device's table entry and [Limitations](#limitations) for any setup or firmware requirements.
+3. Turn on **Start with Windows** in **Settings → General** (right-click the levels to open settings). For the headsets that use HeadsetControl, put `headsetcontrol.exe` next to the exe; check your device's table entry and [Limitations](#limitations) for any setup or firmware requirements.
 
 `installer\build-installer.ps1` can still package a per-user installer with Inno Setup if you want one.
 
@@ -257,7 +296,8 @@ BatteryHub.exe --list     # print every device and its battery level, then exit
 BatteryHub.exe --json     # print a JSON array of devices and battery levels, then exit
 BatteryHub.exe --dump     # every HID collection, HID devices that could not be opened, all USB devices (also ones
                                # without a HID interface) and Bluetooth devices; also saved to %TEMP%\BatteryHub-dump.txt
-BatteryHub.exe --demo     # sample devices of every brand instead of real ones (screenshots, checking colors)
+BatteryHub.exe --demo     # sample devices of every brand instead of real ones
+BatteryHub.exe --demo-desk  # one device of each kind, low and charging, for screenshots of the panel and taskbar
 BatteryHub.exe --quit     # close the running instance
 ```
 
@@ -341,7 +381,7 @@ the remaining vendors are planned follow-up phases.
 - **Crowded taskbars:** with a very full centered Windows 11 taskbar, the app buttons can reach the widget. On Windows 10 the task-button area is narrowed automatically.
 - **Phones:** read from a file Phone Link writes for the Start menu companion card, which is not a documented API and may change with Phone Link updates. The phone shows while Phone Link reports it as connected; a card older than 3 hours is shown dimmed. The card also says when the phone is charging, which shows as the charging bolt.
 - **Logitech G435 on the `046D:0ACB` receiver:** its receiver has no passive status channel. Reading the battery puts the receiver into its bootloader bridge, which mutes the headset audio for about a second, so the G435 is read at most every 30 minutes (every 5 minutes while the headset is off) and when you click *Refresh now*. The percentage is estimated from the voltage with a generic Li-ion curve. If the audio ever stays muted, unplug and replug the receiver. The newer `046D:0ADF` dongle uses a different protocol without this side effect.
-- **Sleeping devices:** a device that is asleep may not answer. Its last value stays visible, dimmed unless *Dim sleeping devices* is turned off in the menu. Logitech receivers drop sleeping devices from the link, so their last value is kept for 30 minutes.
+- **Sleeping devices:** a device that is asleep may not answer. Its last value stays visible, dimmed unless *Dim sleeping devices* is turned off in settings. Logitech receivers drop sleeping devices from the link, so their last value is kept for 30 minutes.
 - **Logitech mice on the `046D:C542` receiver** (C-U0019 "Wireless Receiver", shipped with the M280 and some M185 / M190 / M220): this receiver does not speak HID++. It exposes only a standard mouse and one vendor feature report (ID 5, 7 bytes), with no HID++ short or long reports, so the Logitech driver has nothing to ask and the mouse is not listed. [Solaar](https://github.com/pwr-Solaar/Solaar/issues/1835) does not support it for the same reason, and no battery query for it is documented.
 - **HECATE G2 Wireless 7.1 headset** (2.4 GHz dongle `35BB:A009` / `A209`): no battery query for its dongle is documented yet, so it is not read. A USB capture while the HECATE software shows the headset battery (see CONTRIBUTING.md) is the way to add it.
 - **Keychron keyboards:** with stock firmware they only report their battery over Bluetooth (shown via the Bluetooth support). Over the 2.4 GHz receiver or the cable they need firmware with the battery patch ([docs/keychron_keyboard_firmware/README.md](docs/keychron_keyboard_firmware/README.md)); updating the keyboard from Keychron Launcher removes it. Keychron mice are supported.
@@ -371,7 +411,7 @@ Refresh now = Aggiorna ora
 {name} is at {percent}% = {name} è al {percent}%
 ```
 
-- **Use your own language right away:** choose *Language → Add your own language...* in the menu. It opens `%APPDATA%\WirelessBattery\lang` with `_template.txt`, which lists every phrase. Copy it to e.g. `it.txt`, fill in `@code`, `@name` and the translations, and the language appears in the menu (no restart needed). A file there with the same `@code` as a built-in language replaces its phrases, so you can also fix a single word locally.
+- **Use your own language right away:** choose *Add your own language → Open folder* in **Settings → General**. It opens `%APPDATA%\WirelessBattery\lang` with `_template.txt`, which lists every phrase. Copy it to e.g. `it.txt`, fill in `@code`, `@name` and the translations, and the language appears in the list (no restart needed). A file there with the same `@code` as a built-in language replaces its phrases, so you can also fix a single word locally.
 - **Share it with everyone:** send the file as a pull request to [`lang/`](lang). The build includes every file in that folder automatically; no code change is needed.
 - Keep `{placeholders}` as they are, and add `@rtl = 1` for right-to-left scripts. Phrases left empty stay English, so a partial translation is fine.
 - The `--list` and `--dump` output stays English on purpose: it is pasted into GitHub issues.

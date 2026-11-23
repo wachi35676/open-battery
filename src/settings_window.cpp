@@ -293,7 +293,7 @@ void GeneralPage(Ctx& k) {
     ComboCard(k, 0xE72C, T(L"Check battery every"), T(L"Longer intervals use less power"), s.poll, [](int i) { Act(Action::Poll, i); });
     ToggleCard(k, fluent::glyph::History, T(L"Record battery history"), T(L"Keep readings for the battery history charts"),
                s.recordHistory, [] { Act(Action::RecordHistory, !g_state.recordHistory); });
-    ComboCard(k, 0xE771, T(L"Panel background"), T(L"Mica and Acrylic are Windows' materials; Clear glass is more transparent"),
+    ComboCard(k, 0xE771, T(L"Panel background"), T(L"Mica, Acrylic, or the more see-through Clear glass"),
               s.panel, [](int i) { Act(Action::Panel, i); });
     Section(k, T(L"Language"));
     ComboCard(k, 0xF2B7, T(L"Language"), T(L"Automatic follows the Windows display language"), s.language,

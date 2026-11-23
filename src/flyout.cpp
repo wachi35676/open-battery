@@ -320,6 +320,7 @@ struct Anchor {
 
 // Where things stand on the desk (world units).
 constexpr float kHeadX = 1.3f, kHeadY = 1.0f, kBandR = .56f, kBandZ = 1.7f;  // headset stand; headband arc
+constexpr float kBandLeg = .42f;  // the band runs straight down this far below the arc, to the ear cups
 constexpr float kPhoneX0 = 8.5f, kPhoneX1 = 9.35f, kPhoneY0 = .5f, kPhoneY1 = 2.0f;
 constexpr float kPadCx = 1.38f, kPadHalf = .95f, kPadY0 = 2.3f, kPadLen = 1.22f, kPadNotch = .57f;  // controller
 constexpr float kStandX0 = 4.15f, kStandX1 = 5.85f, kStandY0 = .06f, kStandY1 = 1.0f;                // monitor foot
@@ -364,7 +365,7 @@ std::vector<P3> CableRoute(int slot) {
     const float z = .03f, px = (kPhoneX0 + kPhoneX1) / 2, ear = kHeadX + kBandR;
     switch (slot) {
         case SlotHeadset:  // hangs from the near ear cup
-            return { { ear, kHeadY, kBandZ - .57f }, { ear + .04f, kHeadY, .62f }, { ear + .1f, kHeadY - .04f, .14f },
+            return { { ear, kHeadY, kBandZ - kBandLeg - .5f }, { ear + .04f, kHeadY, .62f }, { ear + .1f, kHeadY - .04f, .14f },
                      { ear + .22f, kHeadY - .26f, z }, { ear + .27f, .45f, z }, { ear + .22f, 0, z } };
         case SlotPhone:  // out of the bottom of the phone, around it
             return { { px, kPhoneY1 + .1f, z }, { px + .05f, kPhoneY1 + .3f, z }, { kPhoneX1 + .08f, kPhoneY1 + .34f, z },
@@ -492,7 +493,7 @@ void DrawMonitor(const Iso& iso, const Materials& m, const fluent::Palette& c) {
 
 void DrawHeadset(const Iso& iso, const Materials& m, const Shades& s) {
     const float cx = kHeadX, cy = kHeadY, R = kBandR, zc = kBandZ, half = .11f, thick = .08f;
-    const float cupR = .37f, cupZ = zc - .2f;
+    const float cupR = .37f, leg = kBandLeg, cupZ = zc - leg - .13f;  // a head fits: taller than it is wide
     D2D1_COLOR_F cushion = Shade(s.top, g_model.light ? .42f : .36f), cushionDark = Shade(cushion, .7f);
     Extrude(iso, Oval(cx, cy, .5f, .5f), 0, .06f, m.body, &m.rim);  // stand
     // Far ear cup: we look into its cushion.
@@ -520,6 +521,16 @@ void DrawHeadset(const Iso& iso, const Materials& m, const Shades& s) {
                 Quad(at(a0, R, cy + half), at(a1, R, cy + half), at(a1, R - thick, cy + half), at(a0, R - thick, cy + half), s.front);
             }
         }
+    // The band's straight ends, down to the ear cups. Far one: its inside and its front edge; near one: its
+    // outside and its front edge.
+    Quad(iso.P(cx - R + thick, cy - half, zc), iso.P(cx - R + thick, cy + half, zc), iso.P(cx - R + thick, cy + half, zc - leg),
+         iso.P(cx - R + thick, cy - half, zc - leg), Shade(s.front, .8f));
+    Quad(iso.P(cx - R, cy + half, zc), iso.P(cx - R + thick, cy + half, zc), iso.P(cx - R + thick, cy + half, zc - leg),
+         iso.P(cx - R, cy + half, zc - leg), s.front);
+    Quad(iso.P(cx + R, cy - half, zc), iso.P(cx + R, cy + half, zc), iso.P(cx + R, cy + half, zc - leg), iso.P(cx + R, cy - half, zc - leg),
+         s.side);
+    Quad(iso.P(cx + R - thick, cy + half, zc), iso.P(cx + R, cy + half, zc), iso.P(cx + R, cy + half, zc - leg),
+         iso.P(cx + R - thick, cy + half, zc - leg), s.front);
     // Near ear cup: cushion towards the head, then the shell with its cap.
     CupX(iso, cx + R - .12f, cx + R - .04f, cy, cupZ, cupR * .92f, cushion, cushionDark, cushion);
     CupX(iso, cx + R - .04f, cx + R + .12f, cy, cupZ, cupR, s.top, s.front, Mix(s.side, s.top, .55f));
@@ -548,29 +559,95 @@ Outline GamepadOutline() {
     return Smooth(ctrl, 4);
 }
 
-void DrawGamepad(const Iso& iso, const Materials& m, const Shades& s) {
-    const float z = .2f;
-    Extrude(iso, GamepadOutline(), 0, z, s, &m.rim);
-    D2D1_COLOR_F dark = Shade(s.top, .46f), mid = Shade(s.top, .7f);
-    Shades stick = { mid, Shade(mid, .8f), Shade(mid, .66f) };
-    auto ux = [](float u) { return kPadCx + u * kPadHalf; };
-    auto vy = [](float v) { return kPadY0 + v * kPadLen; };
-    const float lsx = ux(-.56f), lsy = vy(.27f), rsx = ux(.27f), rsy = vy(.41f);  // thumbsticks
-    const float dx = ux(-.27f), dy = vy(.41f), bx = ux(.56f), by = vy(.27f);      // d-pad, face buttons
-    g_paint.Transform(iso.Plane(z));
-    g_paint.Ellipse(lsx, lsy, .17f, .17f, dark);
-    g_paint.Ellipse(rsx, rsy, .17f, .17f, dark);
-    g_paint.Fill({ dx - .15f, dy - .05f, dx + .15f, dy + .05f }, .02f, dark);
-    g_paint.Fill({ dx - .05f, dy - .15f, dx + .05f, dy + .15f }, .02f, dark);
-    for (int i = 0; i < 4; i++) {
-        float a = i * kPi / 2;
-        g_paint.Ellipse(bx + .125f * std::cos(a), by + .125f * std::sin(a), .058f, .058f, dark);
+// The outline moved inwards by `d` (for the rounded shell of the controller).
+Outline Inset(const Outline& o, float d) {
+    size_t n = o.size();
+    float area = 0;
+    for (size_t i = 0; i < n; i++) area += o[i].x * o[(i + 1) % n].y - o[(i + 1) % n].x * o[i].y;
+    float sign = area > 0 ? 1.f : -1.f;
+    Outline q;
+    q.reserve(n);
+    for (size_t i = 0; i < n; i++) {
+        const auto &a = o[(i + n - 1) % n], &b = o[(i + 1) % n];
+        float tx = b.x - a.x, ty = b.y - a.y, len = std::sqrt(tx * tx + ty * ty);
+        if (len < 1e-6f) { q.push_back(o[i]); continue; }
+        q.push_back({ o[i].x - ty / len * sign * d, o[i].y + tx / len * sign * d });
     }
+    return q;
+}
+
+// A rounded lump: an ellipse that shrinks as it rises from under its widest level to its crown, dark
+// underneath and lighter towards the top (the mouse's back is built the same way).
+void Lobe(const Iso& iso, float cx, float cy, float rx, float ry, float zMid, float below, float above, const Shades& s) {
+    const int layers = 12;
+    D2D1_COLOR_F under = Shade(s.front, .78f), waist = Mix(s.side, s.front, .55f), crown = Mix(s.top, D2D1::ColorF(1, 1, 1, 1), .06f);
+    for (int k = 0; k <= layers; k++) {
+        float a = (-55 + 141.f * k / layers) * kPi / 180, c = std::cos(a), sn = std::sin(a);
+        float z = zMid + (sn < 0 ? below * sn / .82f : above * sn);
+        D2D1_COLOR_F col = sn < 0 ? Mix(waist, under, -sn / .82f) : Mix(waist, crown, sn);
+        Top(iso, Oval(cx, cy, rx * c, ry * c, 20), std::max(0.f, z), col);
+    }
+}
+
+// A controller is a rounded thing made to be held, not a plate: the shell curves under at its edge instead
+// of standing on a wall, the top is domed from darker edges to a lighter crown, and each grip is its own
+// rounded lobe. The thumbsticks stand on stems under dished caps, with a contact shadow; the d-pad and the
+// face buttons sit proud of the shell and catch a little light.
+void DrawGamepad(const Iso& iso, const Materials& m, const Shades& s) {
+    const float zMid = .15f, above = .2f, z = zMid + above, inMax = .15f;
+    Outline o = GamepadOutline();
+    const int layers = 14;
+    D2D1_COLOR_F under = Shade(s.front, .78f), waist = Mix(s.side, s.front, .55f);
+    for (int k = 0; k <= layers; k++) {
+        float a = (-55 + 145.f * k / layers) * kPi / 180, sn = std::sin(a);
+        float zz = zMid + (sn < 0 ? zMid * sn / .82f : above * sn);
+        D2D1_COLOR_F col = sn < 0 ? Mix(waist, under, -sn / .82f) : Mix(waist, s.top, std::pow(sn, .8f));
+        Top(iso, Inset(o, inMax * (1 - std::cos(a))), std::max(0.f, zz), col, k == layers ? &m.rim : nullptr);
+    }
+    // The grips: round handles, a little higher than the shell between them, with a soft highlight.
+    for (int side = -1; side <= 1; side += 2) {
+        float gx = kPadCx + side * .7f * kPadHalf, gy = kPadY0 + .74f * kPadLen;
+        Lobe(iso, gx, gy, .23f, .33f, zMid + .01f, zMid, above + .03f, s);
+        g_paint.Transform(iso.Plane(z + .03f));
+        g_paint.Ellipse(gx - .03f, gy - .05f, .09f, .14f, D2D1::ColorF(1, 1, 1, g_model.light ? .35f : .07f));
+        g_paint.ResetTransform();
+    }
+    D2D1_COLOR_F dark = Shade(s.top, .46f), mid = Shade(s.top, .7f);
+    D2D1_COLOR_F glint = D2D1::ColorF(1, 1, 1, g_model.light ? .5f : .22f);
+    Shades stick = { mid, Shade(mid, .8f), Shade(mid, .66f) };
+    Shades button = { Shade(s.top, .56f), Shade(s.top, .44f), Shade(s.top, .36f) };
+    const float cy = kPadY0 + kPadLen * .45f, shrink = .1f;  // the crown is a little smaller than the outline
+    auto ux = [&](float u) { return kPadCx + u * kPadHalf * (1 - shrink); };
+    auto vy = [&](float v) { return cy + (kPadY0 + v * kPadLen - cy) * (1 - shrink); };
+    const float lsx = ux(-.56f), lsy = vy(.27f), rsx = ux(.27f), rsy = vy(.43f);  // thumbsticks
+    const float dx = ux(-.27f), dy = vy(.43f), bx = ux(.56f), by = vy(.27f);      // d-pad, face buttons
+    g_paint.Transform(iso.Plane(z));
+    g_paint.Ellipse(lsx, lsy, .16f, .16f, dark);  // the wells the sticks stand in
+    g_paint.Ellipse(rsx, rsy, .16f, .16f, dark);
+    g_paint.Ellipse(lsx + .07f, lsy + .09f, .14f, .14f, D2D1::ColorF(0, 0, 0, .25f));  // contact shadows of the caps
+    g_paint.Ellipse(rsx + .07f, rsy + .09f, .14f, .14f, D2D1::ColorF(0, 0, 0, .25f));
     g_paint.Fill({ kPadCx - .13f, vy(.2f) - .035f, kPadCx - .03f, vy(.2f) + .035f }, .03f, dark);  // menu buttons
     g_paint.Fill({ kPadCx + .03f, vy(.2f) - .035f, kPadCx + .13f, vy(.2f) + .035f }, .03f, dark);
     g_paint.ResetTransform();
-    Extrude(iso, Oval(lsx, lsy, .115f, .115f, 14), z, z + .08f, stick);
-    Extrude(iso, Oval(rsx, rsy, .115f, .115f, 14), z, z + .08f, stick);
+    Extrude(iso, RoundRect(dx - .15f, dx + .15f, dy - .05f, dy + .05f, 0), z, z + .035f, button);  // d-pad
+    Extrude(iso, RoundRect(dx - .05f, dx + .05f, dy - .15f, dy + .15f, 0), z, z + .035f, button);
+    g_paint.Transform(iso.Plane(z + .035f));
+    g_paint.Fill({ dx - .13f, dy - .04f, dx - .02f, dy - .015f }, .01f, glint);
+    g_paint.ResetTransform();
+    static const int order[4] = { 3, 2, 0, 1 };  // back to front
+    for (int i : order) {
+        float a = i * kPi / 2, x = bx + .13f * std::cos(a), y = by + .13f * std::sin(a);
+        Extrude(iso, Oval(x, y, .06f, .06f, 12), z, z + .045f, button);
+        g_paint.Transform(iso.Plane(z + .045f));
+        g_paint.Ellipse(x - .015f, y - .02f, .022f, .022f, glint);
+        g_paint.ResetTransform();
+    }
+    for (int i = 0; i < 2; i++) {
+        float x = i ? rsx : lsx, y = i ? rsy : lsy;
+        Extrude(iso, Oval(x, y, .07f, .07f, 12), z, z + .1f, button);                 // stem
+        Extrude(iso, Oval(x, y, .125f, .125f, 16), z + .1f, z + .17f, stick, &m.rim);  // cap
+        Top(iso, Oval(x, y, .08f, .08f, 14), z + .17f, Shade(mid, .8f));               // its dished middle
+    }
 }
 
 void DrawKeyboard(const Iso& iso, const Materials& m, const Shades& s) {

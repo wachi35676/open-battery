@@ -1,6 +1,6 @@
 #pragma once
 // A small transparent strip on the taskbar, just left of the notification area, showing
-// "[icon] 30%  [icon] 93%". Implemented as a layered child window of the taskbar (Shell_TrayWnd), with a
+// "[icon] 30%  [icon] 93%" with a small isometric icon for each device (widget_icons.h). Implemented as a layered child window of the taskbar (Shell_TrayWnd), with a
 // copy on each secondary-monitor taskbar (Shell_SecondaryTrayWnd) next to its clock.
 #include <windows.h>
 #include <string>
@@ -12,13 +12,13 @@ struct WidgetItem {
     DeviceKind kind = DeviceKind::Other;
     int  percent  = -1;     // -1 = unknown
     std::wstring text;      // shown instead of the percentage when set (coarse levels like "Low")
-    bool charging = false;
-    bool full     = false;  // on power and fully charged: a green check mark instead of the bolt
+    bool charging = false;  // the icon is plugged into a cable, with a pulse of light now and then
+    bool full     = false;  // on power and fully charged: cable with a green plug, and a green check mark
     bool dim      = false;  // asleep / stale value
     bool low      = false;
-    bool bluetooth = false;  // picks the Bluetooth icon when the device type is unknown
+    bool bluetooth = false;  // not used by the strip any more (unknown device types share one icon)
     std::wstring label;      // tiny caption on the icon; set only when two devices of one kind are shown
-    Accent accent  = Accent::None;  // brand color for the icon, its glow and the level bar
+    Accent accent  = Accent::None;  // not used by the strip any more (brand colours were removed); kept for callers
 };
 
 namespace widget {
@@ -30,9 +30,9 @@ void SetItems(const std::vector<WidgetItem>& items, const std::wstring& tooltip)
 void SetLightTheme(bool light);
 // Draws a rounded plate in the taskbar's colours behind the text (kept across Create/Destroy).
 void SetBackground(bool on);
-// Icon above the percentage instead of beside it, when the taskbar is tall enough (kept across Create/Destroy).
+// No-ops: the stacked and charge-ring styles were removed, the strip has one style now. Kept so that
+// existing callers compile.
 void SetStacked(bool on);
-// A charge ring around each device icon instead of the percentage (kept across Create/Destroy).
 void SetRingStyle(bool on);
 // Left end of the taskbar (between its edge or the Widgets button and the Start button) instead of next
 // to the tray. Windows 11 with centred taskbar icons only; elsewhere, or without room, it stays right.

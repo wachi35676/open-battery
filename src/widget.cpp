@@ -1,12 +1,16 @@
 #include "widget.h"
 
+#include "fluent.h"
 #include "i18n.h"
+#include "widget_icons.h"
 
 #include <commctrl.h>
 #include <uiautomation.h>
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <map>
+#include <tuple>
 
 namespace {
 
@@ -14,8 +18,6 @@ HWND g_wnd, g_taskbar, g_tip, g_notify, g_rebar;
 UINT g_clickMsg;
 bool g_light, g_hover;
 bool g_background;  // opaque rounded plate behind the text, for transparent / restyled taskbars
-bool g_stacked;     // icon above the percentage (menu option, PR #525)
-bool g_ring;        // a charge ring around each device icon instead of the percentage (menu option)
 bool g_vertical;    // the primary taskbar is docked left or right: one block per device, stacked (PR #321)
 bool g_left;        // left end of a centred Windows 11 taskbar instead of next to the tray (menu option)
 std::vector<WidgetItem> g_items;
@@ -24,6 +26,16 @@ RECT g_lastTray{}, g_lastBar{}, g_lastWidgets{};
 int g_lastW = -1, g_lastDpi = 0, g_lastLeft = -1;
 SIZE g_size{};
 HINSTANCE g_inst;
+
+// The charging pulse: every two seconds a dot of light runs along the cable of each charging device, as in
+// the click panel. Two timers on the primary strip's window: a slow one between pulses and a 15 fps one
+// during a pulse, so nothing is repainted in between. Neither runs unless a shown device is charging, and
+// with Windows animations turned off there is no pulse at all (the cable and its plug stay as drawn).
+constexpr UINT_PTR kPulseIdle = 1, kPulseFrame = 2;
+constexpr int kPulseEveryMs = 2000, kPulseMs = 660, kPulseFrameMs = 66;
+bool g_pulseOn;           // the idle or the frame timer is running
+double g_pulse = -1;      // 0..1 along the cable during a pulse, otherwise -1
+ULONGLONG g_pulseStart;
 
 // Copies of the strip on secondary-monitor taskbars (Shell_SecondaryTrayWnd), so the levels stay visible
 // while a game runs fullscreen on the main screen. Same drawing, same click and tooltip; each one sits
@@ -277,20 +289,7 @@ void ApplyTipTheme() {
     }
 }
 
-wchar_t Glyph(DeviceKind k, bool bluetooth) {
-    switch (k) {
-        case DeviceKind::Headset:  return 0xE7F6;  // Headphone
-        case DeviceKind::Mouse:    return 0xE962;  // Mouse
-        case DeviceKind::Keyboard: return 0xE765;  // KeyboardClassic
-        case DeviceKind::Gamepad:  return 0xE7FC;  // Game
-        case DeviceKind::Phone:    return 0xE8EA;  // CellPhone
-        case DeviceKind::Microphone: return 0xE720;  // Microphone
-        default:                   return bluetooth ? 0xE702 : 0xE772;  // Bluetooth / Devices
-    }
-}
-constexpr wchar_t kBolt = 0xE945;            // LightningBolt
-constexpr wchar_t kCheck = 0xE73E;           // CheckMark, in place of the bolt once fully charged
-constexpr wchar_t kBatteryUnknown = 0xE996;  // shown when there is nothing to display
+constexpr wchar_t kCheck = 0xE73E;  // CheckMark after the level once fully charged (still on power)
 
 // Creates a font, falling back when the preferred face is not installed (GDI would silently substitute).
 HFONT MakeFont(int px, int weight, const wchar_t* face, const wchar_t* fallback, int fallbackPx = 0) {
@@ -314,6 +313,7 @@ HFONT MakeFont(int px, int weight, const wchar_t* face, const wchar_t* fallback,
 struct Mask {
     int w = 0, h = 0;
     std::vector<BYTE> a;
+    int base = 0;  // rows from the top of the ink down to the text's baseline
 };
 
 Mask RenderMask(const std::wstring& s, HFONT font, bool darkOnLight) {
@@ -353,6 +353,119 @@ Mask RenderMask(const std::wstring& s, HFONT font, bool darkOnLight) {
     SelectObject(dc, of);
     DeleteObject(bmp);
     DeleteDC(dc);
+    m.base = m.h;
+    return m;
+}
+
+// Text as the taskbar's own clock draws it: Segoe UI Variable through DirectWrite with greyscale
+// anti-aliasing, `px` pixels high. `tabular` asks for fixed-width digits, so a level that changes does not
+// make the strip shift about. Cropped to the ink, with the baseline kept so that pieces of different sizes
+// can share a line. Cached: the strip repaints every second and shows the same few strings.
+Mask TextMask(const std::wstring& s, int px, bool tabular) {
+    static std::map<std::tuple<std::wstring, int, bool>, Mask> cache;
+    auto key = std::make_tuple(s, px, tabular);
+    auto hit = cache.find(key);
+    if (hit != cache.end()) return hit->second;
+    if (cache.size() > 400) cache.clear();
+    Mask m;
+    static ID2D1Factory* d2d = nullptr;
+    static ID2D1DCRenderTarget* rt = nullptr;
+    IDWriteFactory* dw = fluent::DWrite();
+    if (!d2d) D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &d2d);
+    if (d2d && !rt) {
+        D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE), 96, 96);
+        d2d->CreateDCRenderTarget(&props, &rt);
+    }
+    IDWriteTextFormat* format = nullptr;
+    IDWriteTextLayout* layout = nullptr;
+    if (dw && rt && !s.empty() &&
+        SUCCEEDED(dw->CreateTextFormat(L"Segoe UI Variable Text", nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                                       DWRITE_FONT_STRETCH_NORMAL, (float)px, L"", &format)) &&
+        SUCCEEDED(dw->CreateTextLayout(s.c_str(), (UINT32)s.size(), format, 4000, 400, &layout))) {
+        layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        IDWriteTypography* typography = nullptr;
+        if (tabular && SUCCEEDED(dw->CreateTypography(&typography))) {
+            DWRITE_FONT_FEATURE feature = { DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES, 1 };
+            DWRITE_TEXT_RANGE all = { 0, (UINT32)s.size() };
+            typography->AddFontFeature(feature);
+            layout->SetTypography(typography, all);
+            typography->Release();
+        }
+        DWRITE_TEXT_METRICS tm{};
+        DWRITE_LINE_METRICS lm{};
+        UINT32 lines = 0;
+        layout->GetMetrics(&tm);
+        layout->GetLineMetrics(&lm, 1, &lines);
+        const int pad = 4;
+        int W = (int)std::ceil(tm.widthIncludingTrailingWhitespace) + 2 * pad, H = (int)std::ceil(tm.height) + 2 * pad;
+        HDC dc = CreateCompatibleDC(nullptr);
+        BITMAPINFO bi{};
+        bi.bmiHeader = { sizeof(BITMAPINFOHEADER), W, -H, 1, 32, BI_RGB };
+        void* bits = nullptr;
+        HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+        if (bmp) {
+            HGDIOBJ ob = SelectObject(dc, bmp);
+            RECT rc{ 0, 0, W, H };
+            ID2D1SolidColorBrush* white = nullptr;
+            if (SUCCEEDED(rt->BindDC(dc, &rc))) {
+                rt->BeginDraw();
+                rt->Clear(D2D1::ColorF(0, 0, 0, 1));
+                rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+                if (SUCCEEDED(rt->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 1), &white))) {
+                    rt->DrawTextLayout(D2D1::Point2F((float)pad, (float)pad), layout, white);
+                    white->Release();
+                }
+                if (rt->EndDraw() == (HRESULT)D2DERR_RECREATE_TARGET) {
+                    rt->Release();
+                    rt = nullptr;
+                }
+                GdiFlush();
+                const DWORD* p = static_cast<const DWORD*>(bits);
+                int x0 = W, y0 = H, x1 = -1, y1 = -1;
+                for (int y = 0; y < H; y++)
+                    for (int x = 0; x < W; x++)
+                        if ((p[y * W + x] >> 8) & 0xFF) { x0 = std::min(x0, x); x1 = std::max(x1, x); y0 = std::min(y0, y); y1 = std::max(y1, y); }
+                if (x1 >= 0) {
+                    m.w = x1 - x0 + 1;
+                    m.h = y1 - y0 + 1;
+                    m.a.resize((size_t)m.w * m.h);
+                    for (int y = 0; y < m.h; y++)
+                        for (int x = 0; x < m.w; x++) m.a[y * m.w + x] = (BYTE)((p[(y0 + y) * W + x0 + x] >> 8) & 0xFF);
+                    m.base = (int)std::lround(pad + lm.baseline) - y0;
+                }
+            }
+            SelectObject(dc, ob);
+            DeleteObject(bmp);
+        }
+        DeleteDC(dc);
+    }
+    if (layout) layout->Release();
+    if (format) format->Release();
+    if (!m.w) {  // DirectWrite or Direct2D unavailable: GDI
+        HFONT font = MakeFont(px, FW_NORMAL, L"Segoe UI Variable Text", L"Segoe UI");
+        m = RenderMask(s, font, g_light);
+        DeleteObject(font);
+    }
+    cache[key] = m;
+    return m;
+}
+
+// "85%" as the level: the number in the clock's size with fixed-width digits, and a smaller, quieter
+// percent sign on the same baseline, so the number is what the eye lands on.
+Mask LevelMask(int percent, int numberPx, int signPx) {
+    Mask d = TextMask(std::to_wstring(percent), numberPx, true), p = TextMask(L"%", signPx, false);
+    int gap = std::max(1, numberPx / 12);
+    Mask m;
+    m.base = std::max(d.base, p.base);
+    m.w = d.w + gap + p.w;
+    m.h = m.base + std::max(d.h - d.base, p.h - p.base);
+    m.a.assign((size_t)m.w * m.h, 0);
+    for (int y = 0; y < d.h; y++)
+        for (int x = 0; x < d.w; x++) m.a[(size_t)(y + m.base - d.base) * m.w + x] = d.a[(size_t)y * d.w + x];
+    for (int y = 0; y < p.h; y++)
+        for (int x = 0; x < p.w; x++)
+            m.a[(size_t)(y + m.base - p.base) * m.w + d.w + gap + x] = (BYTE)(p.a[(size_t)y * p.w + x] * 66 / 100);
     return m;
 }
 
@@ -377,210 +490,124 @@ struct Canvas {
         for (int j = 0; j < m.h; j++)
             for (int i = 0; i < m.w; i++) Blend(x + i, y + j, c, m.a[j * m.w + i] * alpha / 255);
     }
-};
-
-// Soft glow around a glyph, like a lit RGB device: the coverage mask padded by r pixels, box-blurred
-// twice and brightened so a thin icon outline still gives a visible glow.
-Mask Halo(const Mask& m, int r) {
-    Mask g;
-    g.w = m.w + 2 * r;
-    g.h = m.h + 2 * r;
-    std::vector<int> a((size_t)g.w * g.h, 0), tmp(a.size(), 0);
-    for (int y = 0; y < m.h; y++)
-        for (int x = 0; x < m.w; x++) a[(y + r) * g.w + x + r] = m.a[y * m.w + x];
-    int n = 2 * r + 1;
-    for (int pass = 0; pass < 2; pass++) {
-        for (int y = 0; y < g.h; y++)
-            for (int x = 0; x < g.w; x++) {
-                int s = 0;
-                for (int k = -r; k <= r; k++) if (x + k >= 0 && x + k < g.w) s += a[y * g.w + x + k];
-                tmp[y * g.w + x] = s / n;
-            }
-        for (int y = 0; y < g.h; y++)
-            for (int x = 0; x < g.w; x++) {
-                int s = 0;
-                for (int k = -r; k <= r; k++) if (y + k >= 0 && y + k < g.h) s += tmp[(y + k) * g.w + x];
-                a[y * g.w + x] = s / n;
+    void Draw(const widget_icons::Sprite& s, int x, int y, int alpha) {  // premultiplied source over
+        for (int j = 0; j < s.h; j++)
+            for (int i = 0; i < s.w; i++) {
+                int X = x + i, Y = y + j;
+                DWORD v = s.px[(size_t)j * s.w + i];
+                if (X < 0 || Y < 0 || X >= w || Y >= h || !(v >> 24)) continue;
+                DWORD d = px[Y * w + X];
+                int inv = 255 - (int)(v >> 24) * alpha / 255;
+                DWORD o = 0;
+                for (int sh = 0; sh < 32; sh += 8)
+                    o |= (DWORD)std::min(255, (int)((v >> sh) & 255) * alpha / 255 + (int)((d >> sh) & 255) * inv / 255) << sh;
+                px[Y * w + X] = o;
             }
     }
-    g.a.resize(a.size());
-    for (size_t i = 0; i < a.size(); i++) g.a[i] = (BYTE)std::min(255, a[i] * 3);
-    return g;
-}
+};
 
-// One drawn piece of the strip. Normal pieces follow each other from left to right. A piece with an
-// `anchor` (index of an earlier piece) is a caption: drawn over that piece, `bx`/`by` from its top-left
-// corner, and taking no room of its own. Branded devices add a glow behind the glyph and a level bar.
+// One drawn piece of the strip: a device icon (`icon`) or a text / glyph mask (`m`). Normal pieces follow
+// each other from left to right. A piece with an `anchor` (index of an earlier piece) is a caption: drawn
+// over that piece, `bx`/`by` from its top-left corner, and taking no room of its own.
 struct Piece {
     Mask m;
-    Rgb color;
-    int alpha;
-    int gapAfter;
+    const widget_icons::Sprite* icon = nullptr;
+    int w = 0, h = 0;
+    Rgb color{};
+    int alpha = 255;
+    int gapAfter = 0;
     int anchor = -1;
     int bx = 0, by = 0;
-    int barPct = -1;  // >= 0: thin level bar under the text (branded devices)
-    Rgb barColor{};
-    Mask halo;        // glow drawn behind the glyph (branded devices)
-    int haloR = 0, haloAlpha = 0;
-    int px = INT_MIN, py = 0;  // fixed top-left position (stacked and vertical layouts); INT_MIN = flow left to right
-    bool plain = false;        // anchored piece drawn without the caption outline (ring arc and icon)
+    int px = INT_MIN, py = 0;  // fixed top-left position (vertical layout); INT_MIN = flow left to right
+    int lift = 0;              // row layout: drawn this much above centre (an icon with a caption under it)
+    int below = 0;             // vertical layout: extra room under the piece (the caption's)
+    bool pulse = false;        // a charging device's icon: the pulse runs along its cable
 };
 
-// Coverage masks for a ring of diameter d: the full circle (track) and the arc that starts at
-// 12 o'clock and runs clockwise over `fraction` of it. 3x3 supersampled for smooth edges.
-void RingMasks(int d, double stroke, double fraction, Mask& track, Mask& arc) {
-    const double kTwoPi = 6.283185307179586;
-    track.w = track.h = arc.w = arc.h = d;
-    track.a.assign((size_t)d * d, 0);
-    arc.a.assign((size_t)d * d, 0);
-    double R = d / 2.0, inner = R - stroke;
-    for (int y = 0; y < d; y++)
-        for (int x = 0; x < d; x++) {
-            int t = 0, a = 0;
-            for (int sy = 0; sy < 3; sy++)
-                for (int sx = 0; sx < 3; sx++) {
-                    double px = x + (sx + 0.5) / 3 - R, py = y + (sy + 0.5) / 3 - R;
-                    double r = std::sqrt(px * px + py * py);
-                    if (r > R || r < inner) continue;
-                    t++;
-                    double ang = std::atan2(px, -py);
-                    if (ang < 0) ang += kTwoPi;
-                    if (ang <= fraction * kTwoPi) a++;
-                }
-            track.a[(size_t)y * d + x] = (BYTE)(t * 255 / 9);
-            arc.a[(size_t)y * d + x] = (BYTE)(a * 255 / 9);
-        }
+Piece TextPiece(Mask m, Rgb color, int alpha, int gapAfter) {
+    Piece p;
+    p.w = m.w;
+    p.h = m.h;
+    p.m = std::move(m);
+    p.color = color;
+    p.alpha = alpha;
+    p.gapAfter = gapAfter;
+    return p;
 }
 
-// Three arrangements of the same pieces:
-//  * normal: "[icon] 30%  [icon] 93%" in one row (unchanged default)
-//  * stacked (menu option, from PR #525): each device's icon above its percentage, to save width;
-//    used only when the taskbar is tall enough, otherwise the normal row
-//  * vertical (left / right taskbar, from PR #321): one device per row block, stacked top to bottom
-// `width` and `height` return the strip's size; in the vertical layout the width is the bar's.
+Piece IconPiece(const widget_icons::Sprite& s, int alpha, int gapAfter) {
+    Piece p;
+    p.icon = &s;
+    p.w = s.w;
+    p.h = s.h;
+    p.alpha = alpha;
+    p.gapAfter = gapAfter;
+    return p;
+}
+
+// The one style of the strip: a small isometric icon of each device (widget_icons) with its level.
+//  * horizontal taskbar: "[icon] 30%  [icon] 93%" in one row
+//  * vertical (left / right taskbar, from PR #321): one block per device, the icon above its level
+// The icon carries the state too: a cable plugged into it while on power, its plug blue while charging
+// (with a pulse of light now and then) and green once full, then also a check mark after the level. Low
+// shows as a red level, and a device that is asleep is faded. `width` and `height` return the strip's
+// size; in the vertical layout the width is the bar's.
 std::vector<Piece> Layout(int barW, int barH, int& width, int& height) {
+    using widget_icons::State;
     Rgb fg = g_light ? Rgb{ 0, 0, 0 } : Rgb{ 255, 255, 255 };
-    Rgb red = g_light ? Rgb{ 196, 30, 40 } : Rgb{ 255, 90, 90 };
-    Rgb charge = g_light ? Rgb{ 0, 120, 212 } : Rgb{ 96, 205, 255 };
+    Rgb red = g_light ? Rgb{ 196, 43, 28 } : Rgb{ 255, 153, 164 };  // Windows' critical text colour
     Rgb full = g_light ? Rgb{ 16, 124, 16 } : Rgb{ 108, 203, 95 };  // Windows "success" green
-    HFONT icons = MakeFont(Px(16), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
-    HFONT bolt = MakeFont(Px(11), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
-    HFONT text = MakeFont(Px(13), FW_NORMAL, L"Segoe UI Variable Text", L"Segoe UI", Px(12));
+    HFONT check = MakeFont(Px(11), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
     HFONT caption = MakeFont(std::max(8, Px(7)), FW_SEMIBOLD, L"Segoe UI Variable Text", L"Segoe UI");  // never under 8 px
+    // Icon height: 20 px at 100%, between the tray's icons and the apps', and smaller on a small taskbar.
+    // Resolved here, per strip, because a mirror on another monitor can have another DPI. The level is set
+    // like the clock: 12 px.
+    int iconSize = std::max(Px(12), std::min(Px(20), (g_vertical ? barW : barH) - Px(10)));
+    const int textPx = Px(12), signPx = Px(10);
 
     std::vector<Piece> out;
-    if (g_ring && !g_items.empty()) {
-        // Ring style: a faint track with the charge as an arc (red when low, blue while charging, green when
-        // full) around a smaller device icon. Exact values stay in the tooltip. Rows or, on a left / right
-        // taskbar, a column.
-        HFONT ringFont = MakeFont(Px(11), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
-        int d = std::min(Px(28), std::max(Px(16), (g_vertical ? barW : barH) - Px(6)));
-        d += d & 1;  // even, so the ring and the icon share an exact centre
-        int y = Px(6);
-        for (size_t i = 0; i < g_items.size(); i++) {
-            const auto& it = g_items[i];
-            int a = it.dim ? 120 : 255;
-            BrandColor bc = AccentColor(it.accent, g_light);
-            Rgb accent{ bc.r, bc.g, bc.b };
-            Rgb iconColor = it.accent != Accent::None ? accent : fg;
-            Rgb arcColor = it.full ? full : it.charging ? charge : it.low ? red : iconColor;
-            Mask track, arc;
-            RingMasks(d, std::max(2.0, d / 13.0), it.full ? 1.0 : it.percent >= 0 ? it.percent / 100.0 : 0.0, track, arc);
-            int ring = (int)out.size();
-            Piece t{ std::move(track), fg, a * (g_light ? 45 : 60) / 255, i + 1 < g_items.size() ? Px(8) : 0 };
-            if (g_vertical) {
-                t.px = (barW - d) / 2;
-                t.py = y;
-                y += d + Px(8);
-            }
-            out.push_back(std::move(t));
-            Piece ar{ std::move(arc), arcColor, a, 0 };
-            ar.anchor = ring;
-            ar.plain = true;
-            out.push_back(std::move(ar));
-            Piece ic{ RenderMask(std::wstring(1, Glyph(it.kind, it.bluetooth)), ringFont, g_light), iconColor, a, 0 };
-            ic.anchor = ring;
-            ic.bx = (d - ic.m.w) / 2;
-            ic.by = (d - ic.m.h) / 2;
-            ic.plain = true;
-            int icon = (int)out.size();
-            out.push_back(std::move(ic));
-            if (!it.label.empty()) {  // tiny caption in the bottom-right corner of the ring
-                Piece c{ RenderMask(it.label, caption, g_light), fg, a, 0 };
-                c.anchor = icon;
-                c.bx = d - out[icon].bx - c.m.w + Px(1);
-                c.by = d - out[icon].by - c.m.h + Px(1);
-                out.push_back(c);
-            }
-        }
-        DeleteObject(ringFont);
-        DeleteObject(icons);
-        DeleteObject(bolt);
-        DeleteObject(text);
-        DeleteObject(caption);
-        if (g_vertical) {
-            width = barW;
-            height = y - Px(8) + Px(6);
-            return out;
-        }
-        height = barH;
-        width = Px(8) * 2;
-        for (auto& p : out)
-            if (p.anchor < 0) width += p.m.w + p.gapAfter;
-        return out;
-    }
     struct Slot { int icon, label, bolt; };  // indices of one device's pieces
     std::vector<Slot> slots;
-    if (g_items.empty()) out.push_back({ RenderMask(std::wstring(1, kBatteryUnknown), icons, g_light), fg, 110, 0 });
+    if (g_items.empty())  // nothing to show yet: a faded battery cell
+        out.push_back(IconPiece(widget_icons::Get(DeviceKind::Other, State::Normal, g_light, iconSize), 110, 0));
     for (size_t i = 0; i < g_items.size(); i++) {
         const auto& it = g_items[i];
         int a = it.dim ? 120 : 255;
-        Rgb tc = it.low ? red : fg;
-        bool mark = it.charging || it.full;  // bolt while charging, green check mark once full
-        size_t glyph = out.size();
-        slots.push_back({ (int)glyph, (int)glyph + 1, mark ? (int)glyph + 2 : -1 });
-        bool branded = it.accent != Accent::None;
-        BrandColor bc = AccentColor(it.accent, g_light);
-        Rgb accent{ bc.r, bc.g, bc.b };
-        Piece icon{ RenderMask(std::wstring(1, Glyph(it.kind, it.bluetooth)), icons, g_light), branded ? accent : fg, a, Px(5) };
-        if (branded && !it.dim) {
-            icon.haloR = Px(3);
-            icon.halo = Halo(icon.m, icon.haloR);
-            icon.haloAlpha = g_light ? 60 : 140;
-        }
-        out.push_back(std::move(icon));
-        std::wstring t = !it.text.empty() ? it.text : it.percent >= 0 ? std::to_wstring(it.percent) + L"%" : L"?";
-        Piece label{ RenderMask(t, text, g_light), tc, a, mark ? Px(2) : 0 };
-        if (branded && it.percent >= 0) {
-            label.barPct = it.percent;
-            label.barColor = it.low ? red : accent;
-        }
-        out.push_back(std::move(label));
-        if (mark) out.push_back({ RenderMask(std::wstring(1, it.full ? kCheck : kBolt), bolt, g_light), it.full ? full : charge, a, 0 });
+        bool mark = it.full;  // green check mark once full; charging shows as the cable alone
+        State state = it.full ? State::Full : it.charging ? State::Charging : it.low ? State::Low : State::Normal;
+        size_t icon = out.size();
+        slots.push_back({ (int)icon, (int)icon + 1, mark ? (int)icon + 2 : -1 });
+        out.push_back(IconPiece(widget_icons::Get(it.kind, state, g_light, iconSize), a, Px(6)));
+        out.back().pulse = state == State::Charging && !it.dim;
+        Mask level = !it.text.empty() ? TextMask(it.text, textPx, false)
+                     : it.percent >= 0 ? LevelMask(it.percent, textPx, signPx) : TextMask(L"?", textPx, false);
+        out.push_back(TextPiece(std::move(level), it.low ? red : fg, a, mark ? Px(3) : 0));
+        if (mark) out.push_back(TextPiece(RenderMask(std::wstring(1, kCheck), check, g_light), full, a, 0));
         out.back().gapAfter = i + 1 < g_items.size() ? Px(14) : 0;
-        if (!it.label.empty()) {  // tiny caption in the bottom-right corner of the icon
-            Piece c{ RenderMask(it.label, caption, g_light), fg, a, 0 };
-            c.anchor = (int)glyph;
-            c.bx = out[glyph].m.w - c.m.w + Px(3);
-            c.by = out[glyph].m.h - c.m.h + Px(3);
-            out.push_back(c);
+        if (!it.label.empty()) {
+            // Tiny caption centred under the icon, the pair centred in the bar, so the caption never hides
+            // the drawing. A taskbar too low for that gets it over the icon's bottom-right corner instead.
+            Piece c = TextPiece(RenderMask(it.label, caption, g_light), fg, a, 0);
+            c.anchor = (int)icon;
+            int room = c.h + Px(1);
+            if (g_vertical || barH >= out[icon].icon->bodyH + room + Px(8)) {
+                c.bx = (out[icon].w - c.w) / 2;
+                c.by = out[icon].h + Px(1);
+                out[icon].lift = room / 2;
+                out[icon].below = room;
+            } else {
+                c.bx = out[icon].w - c.w + Px(2);
+                c.by = out[icon].h - c.h + Px(2);
+            }
+            out.push_back(std::move(c));
         }
     }
-    DeleteObject(icons);
-    DeleteObject(bolt);
-    DeleteObject(text);
+    DeleteObject(check);
     DeleteObject(caption);
 
     height = barH;
-    const int rowGap = Px(2), barRoom = Px(5);  // barRoom: space for a brand level bar under the text
-    int iconH = 0, textH = 0;
-    for (const Slot& s : slots) {
-        iconH = std::max(iconH, out[s.icon].m.h);
-        textH = std::max(textH, out[s.label].m.h);
-    }
-    bool stacked = !g_vertical && g_stacked && !slots.empty() && barH >= iconH + rowGap + textH + barRoom + Px(6);
     if (g_vertical) {
-        // One block per device, centred in the bar's width: icon, then the percentage (and bolt) under it.
+        // One block per device, centred in the bar's width: icon, then the level (and bolt) under it.
         width = barW;
         int y = Px(6);
         if (slots.empty()) {
@@ -588,54 +615,32 @@ std::vector<Piece> Layout(int barW, int barH, int& width, int& height) {
             // branch the row layout below would keep height = barH, and on a left / right taskbar barH is the
             // whole screen height, so the strip covered the entire taskbar.
             Piece& ic = out[0];
-            ic.px = (barW - ic.m.w) / 2;
+            ic.px = (barW - ic.w) / 2;
             ic.py = y;
-            height = y + ic.m.h + Px(6);
+            height = y + ic.h + Px(6);
             return out;
         }
         for (const Slot& s : slots) {
             Piece& ic = out[s.icon];
             Piece& lb = out[s.label];
-            int boltW = s.bolt >= 0 ? Px(2) + out[s.bolt].m.w : 0;
-            ic.px = (barW - ic.m.w) / 2;
+            int boltW = s.bolt >= 0 ? Px(2) + out[s.bolt].w : 0;
+            ic.px = (barW - ic.w) / 2;
             ic.py = y;
-            y += ic.m.h + rowGap;
-            lb.px = (barW - lb.m.w - boltW) / 2;
+            y += ic.h + ic.below + Px(3);
+            lb.px = (barW - lb.w - boltW) / 2;
             lb.py = y;
             if (s.bolt >= 0) {
-                out[s.bolt].px = lb.px + lb.m.w + Px(2);
-                out[s.bolt].py = y + (lb.m.h - out[s.bolt].m.h) / 2;
+                out[s.bolt].px = lb.px + lb.w + Px(2);
+                out[s.bolt].py = y + (lb.h - out[s.bolt].h) / 2;
             }
-            y += lb.m.h + (lb.barPct >= 0 ? barRoom : 0) + Px(8);
+            y += lb.h + Px(10);
         }
-        height = y;
-        return out;
-    }
-    if (stacked) {
-        // Icon on top (bolt to its right), percentage centred under it; the pair centred in the bar's height.
-        int top = (barH - (iconH + rowGap + textH + barRoom)) / 2;
-        int x = Px(8);
-        for (const Slot& s : slots) {
-            Piece& ic = out[s.icon];
-            Piece& lb = out[s.label];
-            int boltW = s.bolt >= 0 ? Px(2) + out[s.bolt].m.w : 0;
-            int slotW = std::max(ic.m.w + boltW, lb.m.w);
-            ic.px = x + (slotW - ic.m.w - boltW) / 2;
-            ic.py = top + (iconH - ic.m.h) / 2;
-            if (s.bolt >= 0) {
-                out[s.bolt].px = ic.px + ic.m.w + Px(2);
-                out[s.bolt].py = top + (iconH - out[s.bolt].m.h) / 2;
-            }
-            lb.px = x + (slotW - lb.m.w) / 2;
-            lb.py = top + iconH + rowGap;
-            x += slotW + Px(10);
-        }
-        width = x - Px(10) + Px(8);
+        height = y - Px(10) + Px(6);
         return out;
     }
     width = Px(8) * 2;
     for (auto& p : out)
-        if (p.anchor < 0) width += p.m.w + p.gapAfter;
+        if (p.anchor < 0) width += p.w + p.gapAfter;
     return out;
 }
 
@@ -663,39 +668,50 @@ void PaintStrip(HWND wnd, HWND taskbar, bool hover, SIZE& size) {
     // (e.g. Windhawk's Taskbar Styler) makes the bar transparent over the wallpaper.
     Rgb barColor = g_light ? Rgb{ 243, 243, 243 } : Rgb{ 32, 32, 32 };
     if (g_background) roundRect(Px(4), Px(6), barColor, 240);
-    if (hover) roundRect(Px(4), Px(4), g_light ? Rgb{ 0, 0, 0 } : Rgb{ 255, 255, 255 }, g_light ? 20 : 26);
+    if (hover) roundRect(Px(4), Px(4), g_light ? Rgb{ 0, 0, 0 } : Rgb{ 255, 255, 255 }, g_light ? 12 : 18);  // as the tray's own hover
 
     int x = Px(8);
-    Rgb track = g_light ? Rgb{ 0, 0, 0 } : Rgb{ 255, 255, 255 };
     std::vector<int> xs(pieces.size()), ys(pieces.size());
     for (size_t i = 0; i < pieces.size(); i++) {
         const Piece& p = pieces[i];
         if (p.anchor < 0) {
-            bool fixed = p.px != INT_MIN;  // stacked / vertical layout: Layout() placed it
+            bool fixed = p.px != INT_MIN;  // vertical layout: Layout() placed it
             xs[i] = fixed ? p.px : x;
-            ys[i] = fixed ? p.py : (H - p.m.h) / 2;
-            if (p.haloR) cv.Draw(p.halo, xs[i] - p.haloR, ys[i] - p.haloR, p.color, p.haloAlpha * p.alpha / 255);
-            if (p.barPct >= 0) {
-                // The bar spans the text's width, like Synapse's battery bar; in the row layout text and bar
-                // are centred together.
-                int bh = std::max(2, Px(2)), gap = Px(3);
-                if (!fixed) ys[i] = (H - (p.m.h + gap + bh)) / 2;
-                int by = ys[i] + p.m.h + gap;
-                int fill = std::max(p.barPct > 0 ? 1 : 0, (p.barPct * p.m.w + 50) / 100);
-                for (int yy = by; yy < by + bh; yy++)
-                    for (int xx = 0; xx < p.m.w; xx++)
-                        cv.Blend(xs[i] + xx, yy, xx < fill ? p.barColor : track, xx < fill ? p.alpha : 45 * p.alpha / 255);
-            }
-            if (!fixed) x += p.m.w + p.gapAfter;
-        } else {  // caption: one-pixel outline in the taskbar's colour so it reads over the icon's lines
+            // An icon is centred on the device, not on the device plus its cable, so plugging in moves nothing.
+            ys[i] = fixed ? p.py : p.icon ? (H - p.icon->bodyH) / 2 - p.icon->bodyY - p.lift : (H - p.h) / 2;
+            if (!fixed) x += p.w + p.gapAfter;
+        } else {  // caption: one-pixel outline in the taskbar's colour so it reads over the icon
             xs[i] = xs[p.anchor] + p.bx;
             ys[i] = ys[p.anchor] + p.by;
-            if (!p.plain)
             for (int oy = -1; oy <= 1; oy++)
                 for (int ox = -1; ox <= 1; ox++)
                     if (ox || oy) cv.Draw(p.m, xs[i] + ox, ys[i] + oy, barColor, 255);
         }
-        cv.Draw(p.m, xs[i], ys[i], p.color, p.alpha);
+        if (p.icon) cv.Draw(*p.icon, xs[i], ys[i], p.alpha);
+        else cv.Draw(p.m, xs[i], ys[i], p.color, p.alpha);
+        if (p.icon && p.pulse && g_pulse >= 0 && p.icon->cable.size() >= 2) {
+            // The pulse: a soft dot of light at g_pulse along the cable, fading in and out at its ends.
+            const auto& path = p.icon->cable;
+            double total = 0;
+            for (size_t k = 1; k < path.size(); k++) total += std::hypot(path[k].x - path[k - 1].x, path[k].y - path[k - 1].y);
+            double want = g_pulse * total, cx = path.back().x, cy = path.back().y;
+            for (size_t k = 1; k < path.size(); k++) {
+                double seg = std::hypot(path[k].x - path[k - 1].x, path[k].y - path[k - 1].y);
+                if (want <= seg && seg > 0) {
+                    cx = path[k - 1].x + (path[k].x - path[k - 1].x) * want / seg;
+                    cy = path[k - 1].y + (path[k].y - path[k - 1].y) * want / seg;
+                    break;
+                }
+                want -= seg;
+            }
+            double r = 2.4 * Dpi() / 96.0, strength = std::sin(g_pulse * 3.14159265);
+            Rgb glow = g_light ? Rgb{ 30, 150, 255 } : Rgb{ 205, 240, 255 };
+            for (int yy = (int)(cy - r) - 1; yy <= (int)(cy + r) + 1; yy++)
+                for (int xx = (int)(cx - r) - 1; xx <= (int)(cx + r) + 1; xx++) {
+                    double d = std::hypot(xx + .5 - cx, yy + .5 - cy) / r;
+                    if (d < 1) cv.Blend(xs[i] + xx, ys[i] + yy, glow, (int)(255 * strength * std::min(1.0, (1 - d) * 1.8)));
+                }
+        }
     }
 
     HDC screen = GetDC(nullptr);
@@ -931,6 +947,65 @@ void PaintAll() {
     for (auto& m : g_mirrors) PaintMirror(m);
 }
 
+// One frame of the pulse: the strips keep their size, so nothing has to be placed again.
+void PaintPulseFrame() {
+    if (!g_wnd) return;
+    if (!g_primaryHidden) PaintStrip(g_wnd, g_taskbar, g_hover, g_size);
+    for (auto& m : g_mirrors) {
+        if (m.lastLeft == INT_MIN) continue;  // hidden
+        g_dpiBar = m.bar;
+        PaintStrip(m.wnd, m.bar, m.hover, m.size);
+        g_dpiBar = nullptr;
+    }
+}
+
+bool WantPulse() {
+    bool charging = false;
+    for (const auto& it : g_items) charging = charging || (it.charging && !it.full && !it.dim);
+    BOOL animations = TRUE;
+    SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animations, 0);
+    return charging && animations;
+}
+
+// Starts the pulse timer when a shown device charges and stops it when none does.
+void SyncPulse() {
+    bool want = g_wnd && WantPulse();
+    if (want == g_pulseOn) return;
+    g_pulseOn = want;
+    if (want) {
+        SetTimer(g_wnd, kPulseIdle, kPulseEveryMs - kPulseMs, nullptr);
+        return;
+    }
+    if (g_wnd) {
+        KillTimer(g_wnd, kPulseIdle);
+        KillTimer(g_wnd, kPulseFrame);
+    }
+    if (g_pulse >= 0) {
+        g_pulse = -1;
+        PaintPulseFrame();
+    }
+}
+
+void OnPulseTimer(UINT_PTR id) {
+    if (!WantPulse()) { SyncPulse(); return; }
+    if (id == kPulseIdle) {
+        KillTimer(g_wnd, kPulseIdle);
+        g_pulseStart = GetTickCount64();
+        g_pulse = 0;
+        SetTimer(g_wnd, kPulseFrame, kPulseFrameMs, nullptr);
+        return;
+    }
+    double t = (double)(GetTickCount64() - g_pulseStart) / kPulseMs;
+    if (t >= 1) {
+        g_pulse = -1;
+        KillTimer(g_wnd, kPulseFrame);
+        SetTimer(g_wnd, kPulseIdle, kPulseEveryMs - kPulseMs, nullptr);
+    } else {
+        g_pulse = t;
+    }
+    PaintPulseFrame();
+}
+
 // Hover highlight for the strip under the mouse: the primary one or a mirror.
 void SetHover(HWND h, bool on) {
     if (h == g_wnd) {
@@ -965,6 +1040,12 @@ LRESULT CALLBACK WidgetProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_MOUSEACTIVATE:
             return MA_NOACTIVATE;
+        case WM_TIMER:
+            if (h == g_wnd && (wp == kPulseIdle || wp == kPulseFrame)) {
+                OnPulseTimer(wp);
+                return 0;
+            }
+            break;
     }
     return DefWindowProcW(h, msg, wp, lp);
 }
@@ -1023,6 +1104,7 @@ bool Create(HINSTANCE inst, HWND notifyWnd, UINT clickMsg, bool lightTheme) {
     g_lastW = -1;
     Reposition();
     if (!g_primaryHidden) ShowWindow(g_wnd, SW_SHOWNOACTIVATE);  // hidden when only another monitor is chosen
+    SyncPulse();
     return true;
 }
 
@@ -1040,7 +1122,9 @@ void Destroy() {
     g_primaryHidden = false;  // the next Create() decides again
     if (g_wbWake) WatchWidgetsButton(nullptr);
     if (g_tip) { DestroyWindow(g_tip); g_tip = nullptr; }
-    if (g_wnd) { DestroyWindow(g_wnd); g_wnd = nullptr; }
+    if (g_wnd) { DestroyWindow(g_wnd); g_wnd = nullptr; }  // its pulse timers go with it
+    g_pulseOn = false;
+    g_pulse = -1;
     g_taskbar = nullptr;
     g_hover = false;
 }
@@ -1063,6 +1147,7 @@ void SetItems(const std::vector<WidgetItem>& items, const std::wstring& tooltip)
     }
     PaintAll();
     Reposition();
+    SyncPulse();
 }
 
 void SetLightTheme(bool light) {
@@ -1076,17 +1161,10 @@ void SetBackground(bool on) {
     PaintAll();
 }
 
-void SetStacked(bool on) {
-    g_stacked = on;
-    PaintAll();
-    if (g_wnd) Reposition();
-}
-
-void SetRingStyle(bool on) {
-    g_ring = on;
-    PaintAll();
-    if (g_wnd) Reposition();
-}
+// The stacked and charge-ring styles are gone: the strip has one style (isometric icons). These remain
+// only so that callers still compile, and do nothing.
+void SetStacked(bool) {}
+void SetRingStyle(bool) {}
 
 void SetLeftSide(bool on) {
     g_left = on;

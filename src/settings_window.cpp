@@ -185,16 +185,12 @@ void TaskbarPage(Ctx& k) {
     const State& s = g_state;
     ComboCard(k, 0xE7F4, T(L"Show battery levels"), T(L"On the taskbar next to the clock, or as tray icons"), s.showAs,
               [](int i) { Act(Action::ShowAs, i); });
-    ComboCard(k, 0xE790, T(L"Style"), T(L"How each device is drawn on the taskbar"), s.style,
-              [](int i) { Act(Action::Style, i); }, s.widget);
     ComboCard(k, 0xE8E4, T(L"Position"), T(L"On the left needs Windows 11 with centred taskbar icons"), s.position,
               [](int i) { Act(Action::Position, i); }, s.widget);
     if (s.monitors.options.size() > 2)
         ComboCard(k, 0xE7F4, T(L"Show the widget on"), T(L"Which taskbars show the battery levels"), s.monitors,
                   [](int i) { Act(Action::Monitor, i); }, s.widget);
     Section(k, T(L"Appearance"));
-    ToggleCard(k, 0xE790, T(L"Brand colors"), T(L"Razer green, Logitech blue and other makers' colors"), s.brandColors,
-               [] { Act(Action::BrandColors, !g_state.brandColors); }, s.widget);
     ToggleCard(k, 0xE771, T(L"Background behind the text"), T(L"Keeps it readable on transparent taskbar themes"), s.background,
                [] { Act(Action::Background, !g_state.background); }, s.widget);
     Section(k, T(L"Sleeping and disconnected devices"));

@@ -13,6 +13,13 @@
 // 30 minutes (or when "Refresh now" is clicked) and the last value is reported in between.
 // While the headset is off or unlinked, it is retried every 5 minutes.
 //
+// The receiver sometimes stops forwarding: every reply in bootloader mode is then all FF, whether the
+// headset is on or off, until the receiver is unplugged and plugged back in (no command we know
+// recovers it, and a USB reset needs admin rights). The headset is then kept visible, dimmed with its
+// last reading, with a hint to replug the receiver, and retried every 30 minutes rather than every 5,
+// since each try cuts the audio. Reads are serialised across processes (the tray app and a
+// "--list" run), so two bootloader sessions never overlap.
+//
 // The headset reports no charging state (the GRS status byte and ATB 0 read the same on and off
 // the charger). Plugging the charger in raises the cell voltage by about 180-250 mV within
 // seconds, while normal use moves it by tens of mV between reads. So a rise of 100 mV between two
@@ -35,6 +42,7 @@ constexpr ULONGLONG kRetryEveryMs = 5ull * 60 * 1000;
 
 std::atomic<bool> g_forceRead{ false };
 bool g_haveReading = false;     // last attempt produced a voltage
+bool g_stuck = false;           // last attempt: the receiver answered only FF (needs a replug)
 bool g_attempted = false;       // at least one attempt was made in this process
 int g_lastMv = 0;
 ULONGLONG g_lastAttempt = 0;
@@ -94,10 +102,22 @@ bool Send(HidDev& d, std::initializer_list<BYTE> frame) {
     return d.SetFeature(b);
 }
 
+// True when a reply carries only FF where the bridge puts its frames (the 16 bytes after the report
+// id; a jammed receiver fills the report with FF except for a 00 in its last byte).
+bool AllFF(const std::vector<BYTE>& r) {
+    if (r.size() < 17) return false;
+    for (size_t i = 1; i <= 16; i++)
+        if (r[i] != 0xFF) return false;
+    return true;
+}
+
 // One battery read. Returns the headset voltage in mV, or 0 when the headset did not answer.
-int ReadMillivolts(HidDev& d) {
+// `stuck` is set when every reply to the battery request was all FF.
+int ReadMillivolts(HidDev& d, bool& stuck) {
     std::vector<BYTE> r;
     int mv = 0;
+    int replies = 0, ff = 0;
+    stuck = false;
     if (!d.SetFeature({ kReport, 1, 3, 0, 0, 0, 0 })) return 0;  // enter bootloader
     Sleep(250);
     d.GetFeature(kReport, r);
@@ -107,6 +127,8 @@ int ReadMillivolts(HidDev& d) {
             ULONGLONG end = GetTickCount64() + 800;
             while (!mv && GetTickCount64() < end) {
                 if (d.GetFeature(kReport, r)) {
+                    replies++;
+                    if (AllFF(r)) ff++;
                     for (size_t i = 1; i + 4 < r.size(); i++) {
                         if (r[i] == 0x06 && r[i + 1] == 0x80 && r[i + 2] == 0x00) {
                             mv = r[i + 3] | (r[i + 4] << 8);
@@ -122,6 +144,7 @@ int ReadMillivolts(HidDev& d) {
     }
     d.SetFeature({ kReport, 8, 3, 0, 0, 0, 0 });  // exit bootloader, always
     Sleep(100);
+    stuck = !mv && replies > 0 && ff == replies;
     // In local mode the receiver answers with its own value (~102); a real cell reads 3.0-4.5 V.
     return (mv >= 3000 && mv <= 4500) ? mv : 0;
 }
@@ -140,18 +163,26 @@ void PollG435(PollContext& ctx) {
     ctx.Claim(kVid, kPid);  // keep the generic fallbacks off this receiver
 
     ULONGLONG now = GetTickCount64();
-    ULONGLONG wait = g_haveReading ? kReadEveryMs : kRetryEveryMs;
+    ULONGLONG wait = g_haveReading || g_stuck ? kReadEveryMs : kRetryEveryMs;
     if (g_forceRead.exchange(false) || !g_attempted || now - g_lastAttempt >= wait) {
+        // One bootloader session at a time, also across processes; skip this poll if another runs.
+        HANDLE lock = CreateMutexW(nullptr, FALSE, L"Local\\WirelessBatteryG435");
+        bool owned = lock && WaitForSingleObject(lock, 5000) != WAIT_TIMEOUT;
         HidDev d;
-        if (d.Open(*colls[0])) {
-            int mv = ReadMillivolts(d);
+        if (owned && d.Open(*colls[0])) {
+            bool stuck = false;
+            int mv = ReadMillivolts(d, stuck);
             g_attempted = true;
             g_lastAttempt = now;
             g_haveReading = mv != 0;
+            g_stuck = stuck;
             if (mv) TrackCharging(mv);
         }
+        if (owned) ReleaseMutex(lock);
+        if (lock) CloseHandle(lock);
     }
-    if (!g_haveReading) return;  // headset off or not linked: hide it
+    if (!g_haveReading && !g_stuck) return;  // headset off or not linked: hide it
+    if (g_stuck && !g_lastMv) g_lastMv = (int)LoadDword(L"G435LastMv");  // last reading, also from before a restart
 
     DeviceStatus s;
     s.key = L"g435:" + Hex4(kPid);
@@ -165,5 +196,12 @@ void PollG435(PollContext& ctx) {
     s.percent = G435Percent(g_charging ? g_lastMv - kChargeOffsetMv : g_lastMv);
     s.charging = g_charging;
     if (g_charging) s.detail = L"charging guessed from voltage";
+    if (g_stuck) {
+        // No fresh reading: keep the last one dimmed and say how to recover.
+        s.percent = g_lastMv ? G435Percent(g_lastMv) : -1;
+        s.charging = false;
+        s.asleep = true;
+        s.detail = L"receiver not answering: unplug and replug it";
+    }
     ctx.out.push_back(s);
 }

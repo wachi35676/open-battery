@@ -32,6 +32,7 @@
 // it then drops only 50-80 mV. Charging never lowers the voltage, so any fall of 40 mV clears the
 // flag, and it also expires 3 hours after it was set (a full charge takes less). The last voltage,
 // flag and start time are kept in the registry, so the comparison also works across restarts.
+#include <algorithm>
 #include "drivers.h"
 
 #include <atomic>
@@ -54,12 +55,21 @@ bool g_attempted = false;       // at least one attempt was made in this process
 int g_lastMv = 0;
 ULONGLONG g_lastAttempt = 0;
 bool g_charging = false;        // estimated from voltage jumps
+bool g_full = false;            // on the charger and the voltage has stopped rising
 bool g_loaded = false;          // saved state read from the registry
 
-constexpr int kJumpMv = 100;    // a rise this big between two reads means plugged in
-constexpr int kDropMv = 40;     // a fall this big means unplugged (readings wobble by about 20 mV)
+constexpr int kJumpMv = 100;    // a rise this big between two close reads means plugged in
+constexpr long long kJumpWindowSec = 40ll * 60;  // ...but only within this time (reads come every 30 min):
+                                                 // across a longer gap it may have been charged meanwhile
+constexpr int kFallMv = 25;     // on the charger the voltage never sinks: this far below its highest charging
+                                // reading means unplugged (readings wobble by about 20 mV)
 constexpr long long kChargeMaxSec = 3ll * 60 * 60;
 constexpr int kChargeOffsetMv = 180;
+// Full: while charging and near the charger's limit (at or above kFullMv), the voltage has not risen
+// more than kFlatMv above its highest reading for kFlatSec. The headset reports no charge state of its own.
+constexpr int kFullMv = 4100;
+constexpr int kFlatMv = 15;
+constexpr long long kFlatSec = 45ll * 60;
 const wchar_t* kKey = L"Software\\WirelessBattery";
 
 DWORD LoadDword(const wchar_t* name) {
@@ -72,27 +82,41 @@ void SaveDword(const wchar_t* name, DWORD v) { RegSetKeyValueW(HKEY_CURRENT_USER
 
 // Updates the charging estimate with a new reading and remembers it for the next comparison.
 void TrackCharging(int mv) {
-    static DWORD since = 0;  // when the charging flag was set (Unix seconds)
+    static DWORD since = 0;     // when the charging flag was set (Unix seconds)
+    static DWORD lastAt = 0;    // when g_lastMv was read
+    static int peakMv = 0;      // highest reading while charging
+    static DWORD peakAt = 0;    // when it last rose by more than kFlatMv
     if (!g_loaded) {
         g_loaded = true;
         g_lastMv = (int)LoadDword(L"G435LastMv");
         g_charging = LoadDword(L"G435Charging") != 0;
         since = LoadDword(L"G435ChargeSince");
+        lastAt = LoadDword(L"G435LastAt");
+        peakMv = (int)LoadDword(L"G435ChargePeak");
+        peakAt = LoadDword(L"G435ChargePeakAt");
     }
     DWORD now = (DWORD)time(nullptr);
-    if (g_lastMv) {
-        if (mv - g_lastMv >= kJumpMv) {
-            if (!g_charging) since = now;
-            g_charging = true;
-        } else if (g_lastMv - mv >= kDropMv) {
-            g_charging = false;
-        }
+    bool close = lastAt && (long long)now - lastAt <= kJumpWindowSec;
+    if (g_lastMv && close && mv - g_lastMv >= kJumpMv && !g_charging) {
+        g_charging = true;
+        since = now;
+        peakMv = 0;
     }
-    if (g_charging && (long long)now - since >= kChargeMaxSec) g_charging = false;  // also no start time saved
+    if (g_charging) {
+        if (!peakMv || mv > peakMv + kFlatMv) { peakMv = std::max(peakMv, mv); peakAt = now; }
+        if (peakMv - mv >= kFallMv) g_charging = false;               // sinking: off the charger
+        if ((long long)now - since >= kChargeMaxSec) g_charging = false;  // also when no start time was saved
+    }
+    if (!g_charging) peakMv = 0;
+    g_full = g_charging && mv >= kFullMv && (long long)now - peakAt >= kFlatSec;
     g_lastMv = mv;
+    lastAt = now;
     SaveDword(L"G435LastMv", (DWORD)mv);
+    SaveDword(L"G435LastAt", now);
     SaveDword(L"G435Charging", g_charging ? 1 : 0);
     SaveDword(L"G435ChargeSince", g_charging ? since : 0);
+    SaveDword(L"G435ChargePeak", (DWORD)peakMv);
+    SaveDword(L"G435ChargePeakAt", g_charging ? peakAt : 0);
 }
 
 // Generic 3.7 V Li-ion curve: Logitech publishes none for the G435, so the percentage is an
@@ -207,10 +231,16 @@ void PollG435(PollContext& ctx) {
     s.percent = G435Percent(g_charging ? g_lastMv - kChargeOffsetMv : g_lastMv);
     s.charging = g_charging;
     if (g_charging) s.detail = L"charging guessed from voltage";
+    if (g_full) {
+        s.percent = 100;
+        s.full = true;
+        s.detail = L"full: voltage steady on the charger";
+    }
     if (g_stuck) {
         // No fresh reading: keep the last one dimmed and say how to recover.
         s.percent = g_lastMv ? G435Percent(g_lastMv) : -1;
         s.charging = false;
+        s.full = false;
         s.asleep = true;
         s.detail = L"receiver not answering: unplug and replug it";
     }

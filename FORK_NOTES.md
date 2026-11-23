@@ -15,7 +15,7 @@ check mark for fully charged devices (#1383).
 | Change | Notes |
 |---|---|
 | Logitech G435 on its older Realtek receiver (`046D:0ACB`); longer wait for sleeping Logitech receiver mice | was PR #93, never merged |
-| G435: charging estimated from voltage jumps; cleared by any 40 mV fall or after 3 hours | the headset reports no charging state |
+| G435: charging estimated from a 100 mV jump between reads under 40 minutes apart; cleared once the voltage sinks 25 mV below its charging peak, or after 3 hours; shown as full when the voltage stops rising for 45 minutes near 4.1 V | the headset reports no charging state |
 | G435: a jammed receiver (only FF replies) keeps the headset visible, dimmed, with a replug hint; first read waits 30 s after a replug or boot; reads serialised across processes | a read right after plugging in jams the receiver |
 | *On the left (Windows 11 with centred icons)*: the widget between the taskbar's left edge (or the Widgets button) and the Start button | |
 | *Charge rings instead of percentages*: a ring around each device icon shows the charge; exact values stay in the tooltip | from our old Customize menu; device order and left placement already exist |
@@ -40,5 +40,5 @@ The file name stays `WirelessBattery.exe` so existing installs keep their *Start
 ## Settings
 
 Stored under `HKCU\Software\WirelessBattery` and changed from the right-click menu. This build adds `LeftSide`
-(the left placement), `RingStyle` (charge rings) and `G435LastMv` / `G435Charging` / `G435ChargeSince` (the last G435 reading, for the
-charging estimate).
+(the left placement), `RingStyle` (charge rings) and `G435LastMv`, `G435LastAt`, `G435Charging`, `G435ChargeSince`, `G435ChargePeak` and
+`G435ChargePeakAt` (the last G435 reading and the charging estimate).

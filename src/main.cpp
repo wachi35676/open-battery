@@ -43,7 +43,7 @@ constexpr UINT ALERT_ICON_ID = 2;
 
 enum MenuId : UINT {
     ID_REFRESH = 100, ID_AUTOSTART, ID_HIDE_LAST_KNOWN, ID_WIDGET_BACKGROUND, ID_EXIT, ID_MODE_WIDGET, ID_MODE_TRAY,
-    ID_BRAND_COLORS, ID_STACKED, ID_SHOW_DISCONNECTED, ID_RECORD_HISTORY, ID_DIM_SLEEPING, ID_LEFT_SIDE,
+    ID_BRAND_COLORS, ID_STACKED, ID_SHOW_DISCONNECTED, ID_RECORD_HISTORY, ID_DIM_SLEEPING, ID_LEFT_SIDE, ID_RING_STYLE,
     ID_POLL_FIRST = 500,  // "Check battery every": ID_POLL_FIRST + 0..7
     ID_LANG_AUTO = 400, ID_LANG_ADD, ID_LANG_FIRST,  // "Language": ID_LANG_FIRST + 0..63
     ID_MONITOR_ALL = 300, ID_MONITOR_MAIN, ID_MONITOR_FIRST,  // "Show the widget on": ID_MONITOR_FIRST + 0..31
@@ -74,6 +74,7 @@ bool g_recordHistory = true;  // save readings for "Battery history..." (menu op
 std::wstring g_widgetMonitor = L"all";  // which taskbars show the widget: "all", "main" or one monitor id
 bool g_widgetBackground = false;  // draw a plate behind the taskbar text (transparent taskbar themes)
 bool g_stacked = false;      // icon above the percentage (menu option)
+bool g_ringStyle = false;    // charge rings instead of percentages (menu option)
 bool g_leftSide = false;     // left end of a centred Windows 11 taskbar (menu option)
 bool g_brandColors = false;  // off by default; known brands get their color (Razer green, Logitech blue, ...)
 std::atomic<DWORD> g_pollIntervalMs{ 60 * 1000 };  // set from the menu, read by the worker thread
@@ -292,6 +293,7 @@ void SetWidgetMonitor(const std::wstring& v) {
 bool LoadStacked() { return LoadBoolSetting(L"StackedLayout", false); }
 bool LoadLeftSide() { return LoadBoolSetting(L"LeftSide", false); }
 void SaveStacked(bool on) { SaveBoolSetting(L"StackedLayout", on); }
+bool LoadRingStyle() { return LoadBoolSetting(L"RingStyle", false); }
 bool LoadBrandColors() { return LoadBoolSetting(L"BrandColors", false); }
 void SaveBrandColors(bool on) { SaveBoolSetting(L"BrandColors", on); }
 DWORD LoadPollSeconds() {
@@ -742,6 +744,12 @@ void SetLanguage(const std::wstring& code) {
     UpdateWidget();
 }
 
+void SetRingStyle(bool on) {
+    g_ringStyle = on;
+    SaveBoolSetting(L"RingStyle", on);
+    widget::SetRingStyle(on);
+}
+
 void SetStacked(bool on) {
     g_stacked = on;
     SaveStacked(on);
@@ -882,6 +890,8 @@ void ShowMenu() {
     UINT bgFlags = MF_STRING | (g_widgetBackground ? MF_CHECKED : 0) | (g_wantWidget ? 0 : MF_GRAYED);
     AppendMenuW(m, bgFlags, ID_WIDGET_BACKGROUND, T(L"Background behind taskbar text (for transparent taskbars)"));
     AppendMenuW(m, MF_STRING | (g_stacked ? MF_CHECKED : 0) | (g_wantWidget ? 0 : MF_GRAYED), ID_STACKED, T(L"Icons above percentages (narrower)"));
+    AppendMenuW(m, MF_STRING | (g_ringStyle ? MF_CHECKED : 0) | (g_wantWidget ? 0 : MF_GRAYED), ID_RING_STYLE,
+                T(L"Charge rings instead of percentages"));
     AppendMenuW(m, MF_STRING | (g_leftSide ? MF_CHECKED : 0) | (g_wantWidget ? 0 : MF_GRAYED), ID_LEFT_SIDE,
                 T(L"On the left (Windows 11 with centred icons)"));
     // With more than one monitor: choose which taskbars show the widget (all, main only, or one monitor).
@@ -964,6 +974,7 @@ void ShowMenu() {
         case ID_MONITOR_MAIN: SetWidgetMonitor(L"main"); break;
         case ID_BRAND_COLORS: SetBrandColors(!g_brandColors); break;
         case ID_STACKED: SetStacked(!g_stacked); break;
+        case ID_RING_STYLE: SetRingStyle(!g_ringStyle); break;
         case ID_LEFT_SIDE: SetLeftSide(!g_leftSide); break;
         case ID_MODE_WIDGET: SetMode(true); break;
         case ID_MODE_TRAY: SetMode(false); break;
@@ -1270,6 +1281,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     g_stacked = LoadStacked();
     g_pollIntervalMs = LoadPollSeconds() * 1000;
     widget::SetStacked(g_stacked);
+    g_ringStyle = LoadRingStyle();
+    widget::SetRingStyle(g_ringStyle);
     g_leftSide = LoadLeftSide();
     widget::SetLeftSide(g_leftSide);
     widget::SetBackground(g_widgetBackground);  // remembered by the widget across re-creation

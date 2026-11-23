@@ -32,6 +32,8 @@ void SetLightTheme(bool light);
 void SetBackground(bool on);
 // Icon above the percentage instead of beside it, when the taskbar is tall enough (kept across Create/Destroy).
 void SetStacked(bool on);
+// A charge ring around each device icon instead of the percentage (kept across Create/Destroy).
+void SetRingStyle(bool on);
 // Left end of the taskbar (between its edge or the Widgets button and the Start button) instead of next
 // to the tray. Windows 11 with centred taskbar icons only; elsewhere, or without room, it stays right.
 void SetLeftSide(bool on);

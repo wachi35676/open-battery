@@ -78,6 +78,7 @@ Show on the taskbar (icon + percentage) =
 Show as tray icons = 
 Background behind taskbar text (for transparent taskbars) = 
 Icons above percentages (narrower) = 
+Charge rings instead of percentages = 
 On the left (Windows 11 with centred icons) = 
 All monitors = 
 Main monitor only = 

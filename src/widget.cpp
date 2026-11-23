@@ -6,6 +6,7 @@
 #include <uiautomation.h>
 #include <algorithm>
 #include <climits>
+#include <cmath>
 
 namespace {
 
@@ -14,6 +15,7 @@ UINT g_clickMsg;
 bool g_light, g_hover;
 bool g_background;  // opaque rounded plate behind the text, for transparent / restyled taskbars
 bool g_stacked;     // icon above the percentage (menu option, PR #525)
+bool g_ring;        // a charge ring around each device icon instead of the percentage (menu option)
 bool g_vertical;    // the primary taskbar is docked left or right: one block per device, stacked (PR #321)
 bool g_left;        // left end of a centred Windows 11 taskbar instead of next to the tray (menu option)
 std::vector<WidgetItem> g_items;
@@ -421,7 +423,34 @@ struct Piece {
     Mask halo;        // glow drawn behind the glyph (branded devices)
     int haloR = 0, haloAlpha = 0;
     int px = INT_MIN, py = 0;  // fixed top-left position (stacked and vertical layouts); INT_MIN = flow left to right
+    bool plain = false;        // anchored piece drawn without the caption outline (ring arc and icon)
 };
+
+// Coverage masks for a ring of diameter d: the full circle (track) and the arc that starts at
+// 12 o'clock and runs clockwise over `fraction` of it. 3x3 supersampled for smooth edges.
+void RingMasks(int d, double stroke, double fraction, Mask& track, Mask& arc) {
+    const double kTwoPi = 6.283185307179586;
+    track.w = track.h = arc.w = arc.h = d;
+    track.a.assign((size_t)d * d, 0);
+    arc.a.assign((size_t)d * d, 0);
+    double R = d / 2.0, inner = R - stroke;
+    for (int y = 0; y < d; y++)
+        for (int x = 0; x < d; x++) {
+            int t = 0, a = 0;
+            for (int sy = 0; sy < 3; sy++)
+                for (int sx = 0; sx < 3; sx++) {
+                    double px = x + (sx + 0.5) / 3 - R, py = y + (sy + 0.5) / 3 - R;
+                    double r = std::sqrt(px * px + py * py);
+                    if (r > R || r < inner) continue;
+                    t++;
+                    double ang = std::atan2(px, -py);
+                    if (ang < 0) ang += kTwoPi;
+                    if (ang <= fraction * kTwoPi) a++;
+                }
+            track.a[(size_t)y * d + x] = (BYTE)(t * 255 / 9);
+            arc.a[(size_t)y * d + x] = (BYTE)(a * 255 / 9);
+        }
+}
 
 // Three arrangements of the same pieces:
 //  * normal: "[icon] 30%  [icon] 93%" in one row (unchanged default)
@@ -440,6 +469,66 @@ std::vector<Piece> Layout(int barW, int barH, int& width, int& height) {
     HFONT caption = MakeFont(std::max(8, Px(7)), FW_SEMIBOLD, L"Segoe UI Variable Text", L"Segoe UI");  // never under 8 px
 
     std::vector<Piece> out;
+    if (g_ring && !g_items.empty()) {
+        // Ring style: a faint track with the charge as an arc (red when low, blue while charging, green when
+        // full) around a smaller device icon. Exact values stay in the tooltip. Rows or, on a left / right
+        // taskbar, a column.
+        HFONT ringFont = MakeFont(Px(11), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
+        int d = std::min(Px(28), std::max(Px(16), (g_vertical ? barW : barH) - Px(6)));
+        d += d & 1;  // even, so the ring and the icon share an exact centre
+        int y = Px(6);
+        for (size_t i = 0; i < g_items.size(); i++) {
+            const auto& it = g_items[i];
+            int a = it.dim ? 120 : 255;
+            BrandColor bc = AccentColor(it.accent, g_light);
+            Rgb accent{ bc.r, bc.g, bc.b };
+            Rgb iconColor = it.accent != Accent::None ? accent : fg;
+            Rgb arcColor = it.full ? full : it.charging ? charge : it.low ? red : iconColor;
+            Mask track, arc;
+            RingMasks(d, std::max(2.0, d / 13.0), it.full ? 1.0 : it.percent >= 0 ? it.percent / 100.0 : 0.0, track, arc);
+            int ring = (int)out.size();
+            Piece t{ std::move(track), fg, a * (g_light ? 45 : 60) / 255, i + 1 < g_items.size() ? Px(8) : 0 };
+            if (g_vertical) {
+                t.px = (barW - d) / 2;
+                t.py = y;
+                y += d + Px(8);
+            }
+            out.push_back(std::move(t));
+            Piece ar{ std::move(arc), arcColor, a, 0 };
+            ar.anchor = ring;
+            ar.plain = true;
+            out.push_back(std::move(ar));
+            Piece ic{ RenderMask(std::wstring(1, Glyph(it.kind, it.bluetooth)), ringFont, g_light), iconColor, a, 0 };
+            ic.anchor = ring;
+            ic.bx = (d - ic.m.w) / 2;
+            ic.by = (d - ic.m.h) / 2;
+            ic.plain = true;
+            int icon = (int)out.size();
+            out.push_back(std::move(ic));
+            if (!it.label.empty()) {  // tiny caption in the bottom-right corner of the ring
+                Piece c{ RenderMask(it.label, caption, g_light), fg, a, 0 };
+                c.anchor = icon;
+                c.bx = d - out[icon].bx - c.m.w + Px(1);
+                c.by = d - out[icon].by - c.m.h + Px(1);
+                out.push_back(c);
+            }
+        }
+        DeleteObject(ringFont);
+        DeleteObject(icons);
+        DeleteObject(bolt);
+        DeleteObject(text);
+        DeleteObject(caption);
+        if (g_vertical) {
+            width = barW;
+            height = y - Px(8) + Px(6);
+            return out;
+        }
+        height = barH;
+        width = Px(8) * 2;
+        for (auto& p : out)
+            if (p.anchor < 0) width += p.m.w + p.gapAfter;
+        return out;
+    }
     struct Slot { int icon, label, bolt; };  // indices of one device's pieces
     std::vector<Slot> slots;
     if (g_items.empty()) out.push_back({ RenderMask(std::wstring(1, kBatteryUnknown), icons, g_light), fg, 110, 0 });
@@ -601,6 +690,7 @@ void PaintStrip(HWND wnd, HWND taskbar, bool hover, SIZE& size) {
         } else {  // caption: one-pixel outline in the taskbar's colour so it reads over the icon's lines
             xs[i] = xs[p.anchor] + p.bx;
             ys[i] = ys[p.anchor] + p.by;
+            if (!p.plain)
             for (int oy = -1; oy <= 1; oy++)
                 for (int ox = -1; ox <= 1; ox++)
                     if (ox || oy) cv.Draw(p.m, xs[i] + ox, ys[i] + oy, barColor, 255);
@@ -988,6 +1078,12 @@ void SetBackground(bool on) {
 
 void SetStacked(bool on) {
     g_stacked = on;
+    PaintAll();
+    if (g_wnd) Reposition();
+}
+
+void SetRingStyle(bool on) {
+    g_ring = on;
     PaintAll();
     if (g_wnd) Reposition();
 }

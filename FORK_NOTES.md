@@ -18,6 +18,7 @@ check mark for fully charged devices (#1383).
 | G435: charging estimated from voltage jumps; cleared by any 40 mV fall or after 3 hours | the headset reports no charging state |
 | G435: a jammed receiver (only FF replies) keeps the headset visible, dimmed, with a replug hint; first read waits 30 s after a replug or boot; reads serialised across processes | a read right after plugging in jams the receiver |
 | *On the left (Windows 11 with centred icons)*: the widget between the taskbar's left edge (or the Widgets button) and the Start button | |
+| *Charge rings instead of percentages*: a ring around each device icon shows the charge; exact values stay in the tooltip | from our old Customize menu; device order and left placement already exist |
 | Visual Studio build (`build-msvc.cmd`), and a one-line MSVC compile fix in `razer_headset.cpp` | |
 
 ## Removed here
@@ -39,5 +40,5 @@ The file name stays `WirelessBattery.exe` so existing installs keep their *Start
 ## Settings
 
 Stored under `HKCU\Software\WirelessBattery` and changed from the right-click menu. This build adds `LeftSide`
-(the left placement) and `G435LastMv` / `G435Charging` / `G435ChargeSince` (the last G435 reading, for the
+(the left placement), `RingStyle` (charge rings) and `G435LastMv` / `G435Charging` / `G435ChargeSince` (the last G435 reading, for the
 charging estimate).

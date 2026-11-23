@@ -2,7 +2,7 @@
 rem Builds WirelessBattery.exe with Visual Studio (2022 or newer, "Desktop development with C++").
 rem Alternative to build.bat / make, which need MinGW-w64.
 setlocal
-cd /d "%REPO%"
+cd /d "%~dp0"
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "%VSWHERE%" (echo Visual Studio not found & exit /b 1)
 for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSDIR=%%i"

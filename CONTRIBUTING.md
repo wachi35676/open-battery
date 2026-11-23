@@ -1,9 +1,9 @@
 # Contributing
 
-## Reporting whether a device works
+## Checking whether a device works
 
 Most drivers were written from protocol documentation and could not be tested on every model.
-Please open an issue with:
+Collect:
 
 - the device name, and whether it is connected by receiver, cable or Bluetooth
 - the output of `BatteryHub.exe --list`
@@ -66,42 +66,6 @@ A language is one UTF-8 text file in `lang/` (copy `lang/_template.txt`, fill in
 C++17, Win32 only, no third-party dependencies. Keep the binary small. Format roughly as the
 existing code does (4-space indent, 120-column lines).
 
-## Windows updater development
-
-The updater is Windows-only and uses WinHTTP, BCrypt and the existing Inno Setup installer.
-Keep update status exclusively in the menu. Do not add update icons, badges, battery tooltip
-changes, balloons, toasts or automatic dialogs. Device polling runs separately from network work.
-
-Build version and channel are shared by C++ and the Windows resource through generated
-`build/version.h`. Use `make VERSION=1.2.3 CHANNEL=test` or `build.bat 1.2.3 test` for local
-testing; `dev` is the default and `stable` enables official release checks. Version components
-must fit 0..65535. Only the official repository's release-tag workflow selects stable
-automatically. Do not turn a fork build into an official update channel accidentally.
-
-Run `make test VERSION=1.2.3 CHANNEL=test` for existing device tests plus strict release parsing,
-version ordering, check scheduling, real SHA-256 file checks, argument quoting and helper guards.
-Updater regressions also cover cancellation at download completion, dialog guards and failure
-to configure HTTP timeouts/redirect restrictions. The Windows test includes the implementations,
-following the existing Linux backend test pattern, and substitutes HTTP sending so these tests
-cannot contact GitHub. No test-only controller entry points are added to production.
-Individual targets are `make test-update-core` and `make test-update-win`. Native updater tests
-link the application resource to activate Common Controls v6. Tests use local data and do not
-download, elevate, install or change the user's startup settings. The application's production
-endpoint cannot be overridden for tests.
-
-Before packaging, run
-`powershell -NoProfile -File scripts/verify-windows-version.ps1 -ExpectedVersion 1.2.3`.
-`installer/build-installer.ps1 -Version 1.2.3` also runs this check before downloading dependencies.
-The `/WBUPDATE=1` installer path preserves existing startup/settings and leaves relaunch to the
-temporary helper. That helper remains under the original user, elevating only a global setup.
-WinHTTP handles belong to the worker; cancellation is cooperative between finite-timeout calls.
-Final app shutdown joins that worker and can therefore wait for an in-flight network timeout.
-
-For a release review, use a disposable Windows account or VM to exercise two real installer
-versions, per-user/global scope, UAC cancellation, startup on/off, custom paths, setup failure
-and relaunch. Unit tests and compiling a package do not verify those installer effects. Visual
-menu/theme review and real installer/UAC end-to-end checks remain manual release gates; do not
-mark them passed unless actually observed. Never test by overwriting the daily user's install.
 
 ## Automatic safety check
 

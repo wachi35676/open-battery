@@ -1,25 +1,12 @@
-# BatteryHub
+# BatteryHub (personal build)
 
-*Formerly **Wireless Battery**. Version 1.1.0 renamed the app; an update keeps your settings, startup choice and battery history.*
-
-[![Support me on Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20me-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/krisgfx)
-[![Donate with PayPal](https://img.shields.io/badge/PayPal-Donate-00457C?logo=paypal&logoColor=white)](https://www.paypal.com/paypalme/krisgfx)
-[![GitHub Sponsors](https://img.shields.io/badge/GitHub-Sponsor-EA4AAA?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/krisgfx9)
-[![Join our Discord](https://img.shields.io/badge/Discord-Join%20us-5865F2?logo=discord&logoColor=white)](https://discord.gg/ZgDDUPP8ye)
-[![Star on GitHub](https://img.shields.io/github/stars/krisgfx9/Wireless-Device-Battery-Monitor?style=flat&logo=github&label=Star)](https://github.com/krisgfx9/Wireless-Device-Battery-Monitor)
-[![Share on Reddit](https://img.shields.io/badge/Reddit-Share-FF4500?logo=reddit&logoColor=white)](https://www.reddit.com/submit?url=https%3A%2F%2Fgithub.com%2Fkrisgfx9%2FWireless-Device-Battery-Monitor&title=Wireless%20Battery%3A%20battery%20levels%20of%20your%20wireless%20devices%20on%20the%20Windows%20taskbar)
-[![Report a device](https://img.shields.io/badge/Report-a%20device-2EA44F?logo=github&logoColor=white)](https://github.com/krisgfx9/Wireless-Device-Battery-Monitor/issues/new)
-[![Help translate](https://img.shields.io/badge/Help-translate-6F42C1?logo=googletranslate&logoColor=white)](https://github.com/krisgfx9/Wireless-Device-Battery-Monitor/pull/129)
+A personal continuation of [BatteryHub](https://github.com/krisgfx9/Wireless-Device-Battery-Monitor) (formerly Wireless Battery) by krisgfx9, whose repository went offline in November 2026. It is kept open under the same GPL-3.0 licence; anyone is welcome to take it. There are no releases, update checks, donation links or device-request uploads: build it yourself.
 
 Battery levels of your wireless mouse, headset, keyboard and controller, right on the Windows taskbar.
 
 ![BatteryHub on the taskbar](docs/screenshot.png)
 
-> **Just want it working?** Download **[BatteryHub-Setup](https://github.com/krisgfx9/Wireless-Device-Battery-Monitor/releases/latest)** from the latest release. Use the per-user installation for setup without administrator rights; see the [installation notes](#install) for unsigned-app warnings and the all-users option.
->
-> **Experienced users** can grab the portable zip, use the [command-line options](#command-line), or [build it from source](#build) with `make` or `build.bat`.
->
-> **Like it?** BatteryHub is free and open source. If it saves you a trip into vendor software, you can support it on [Ko-fi](https://ko-fi.com/krisgfx), [PayPal](https://www.paypal.com/paypalme/krisgfx) or [GitHub Sponsors](https://github.com/sponsors/krisgfx9). It helps me keep my apps free alongside my studies. Not able to donate? A ⭐ star, sharing it, or reporting an unsupported device with a `--dump` helps just as much.
+> **Getting it:** build it from source with `make`, `build.bat` or `build-msvc.cmd` (see [Build](#build)), then run `WirelessBattery.exe` or `BatteryHub.exe`. The [command-line options](#command-line) are below.
 
 - **Tiny**: a ~350 KB app using about 2 MB of RAM. It's plain C++/Win32, with no runtime and no background service, and supports per-user installation without administrator rights.
 - **Vendor apps usually aren't required**: most drivers query devices directly. Some headsets use the bundled [HeadsetControl](https://github.com/Sapd/HeadsetControl) helper. Device-specific setup, firmware patches and conflicts with vendor apps are described in the table and [Limitations](#limitations).
@@ -251,55 +238,16 @@ These reports cover the listed connection modes and behaviors; battery confirmat
 
 ## Install
 
-[![Latest version](https://img.shields.io/github/v/release/krisgfx9/Wireless-Device-Battery-Monitor?label=latest%20version&style=for-the-badge)](https://github.com/krisgfx9/Wireless-Device-Battery-Monitor/releases/latest)
+1. Build it (see [Build](#build)): `build-msvc.cmd` with Visual Studio, or `make` / `build.bat` with MinGW-w64.
+2. Copy the exe anywhere, for example `%LOCALAPPDATA%\Programs\WirelessBattery\`, and run it. No administrator rights or runtime are needed.
+3. Turn on **Start with Windows** in the right-click menu. For the headsets that use HeadsetControl, put `headsetcontrol.exe` next to the exe; check your device's table entry and [Limitations](#limitations) for any setup or firmware requirements.
 
-1. Download **`BatteryHub-Setup-<version>.exe`** from the [latest release](https://github.com/krisgfx9/Wireless-Device-Battery-Monitor/releases/latest).
-2. Run the installer. The default per-user installation needs no administrator rights.
-   **Install for all users** requires administrator permission. Windows may show a SmartScreen warning because the app is not code-signed (see below).
-3. No separate runtime is required. HeadsetControl is bundled for the headsets that use it; check your device's table entry and [Limitations](#limitations) for any setup or firmware requirements.
-
-The installer adds a Start menu entry and an uninstaller (*Settings → Apps*), and can start the app
-when you sign in. Prefer no installer? Download `BatteryHub-<version>-portable.zip`, unzip it
-anywhere and run `BatteryHub.exe`.
+`installer\build-installer.ps1` can still package a per-user installer with Inno Setup if you want one.
 
 **Notes:**
-- **SmartScreen warning:** the exe is not code-signed, so Windows may say "Windows protected your PC". Click *More info → Run anyway*, or build it yourself.
+- **SmartScreen warning:** the exe is not code-signed, so Windows may say "Windows protected your PC". Click *More info → Run anyway*.
 - **Tray-icon mode on Windows 11:** new tray icons go to the `^` overflow. Drag them onto the taskbar or enable them in *Settings → Personalization → Taskbar → Other system tray icons*.
 - **Keeping the app away from a device:** if a device misbehaves while the app is running, list it in the registry string `IgnoreDevices` under `HKCU\Software\WirelessBattery` as `VID:PID` pairs (hex, separated by commas, e.g. `28BD:0947, 1234:ABCD`; `--dump` shows the ids). The app then never opens it. Drawing tablets are skipped automatically.
-
-## Updates on Windows
-
-Official stable Windows builds check the project's latest published stable release in the
-background, 30 seconds after startup and then every 24 hours while the app is running. Open the
-menu to see **Update available: vX.Y.Z...**, or choose **Check for updates...** yourself.
-Update information appears only in this menu: battery icons, percentages and tooltips stay the
-same, and automatic checks never show a notification or dialog. Turn off
-**Automatically check for updates** in the menu to disable background checks.
-
-For an installed copy, click the update entry and **Download and install**. Nothing is installed
-without that click. The app downloads the release's `SHA256SUMS.txt` and its signature, checks the
-signature against the maintainer's public key built into the app, downloads the Windows installer,
-and runs it only if its SHA-256 is the one in the signed list (and the one GitHub lists for it). It
-then updates the existing installation. Settings and startup preference are
-preserved, and the app reopens after installation. An installation for all users can ask for
-administrator permission. **Release notes** opens the official release page; **Later** keeps
-your current version. Portable copies offer the release page for downloading the ZIP manually.
-
-Checks contact GitHub's public API without an account or token. No device or battery information
-is sent. Offline failures and GitHub rate limits leave battery monitoring running; a previously
-found release stays in the menu until a successful check supersedes it or it is installed.
-Cancelling a download waits for the current network operation to finish its finite timeout.
-The installer never restarts Windows automatically.
-
-**Why updates are safe to install:** the signing key never goes to GitHub. The maintainer signs
-each release's checksum list on their own PC (see [docs/releasing.md](docs/releasing.md)), so
-even someone who took over the GitHub account or its build workflow could not publish an update
-the app would install. A release without a valid signature is shown in the menu but can only be
-downloaded by hand. The signature does not replace Windows' own SmartScreen or UAC prompts.
-
-Install the first release containing this feature manually once. Development/test builds disable
-official update checks so local changes cannot be replaced accidentally. Updates for Linux and
-automatic replacement of portable copies are deferred.
 
 ## Command line
 
@@ -308,7 +256,6 @@ BatteryHub.exe --list     # print every device and its battery level, then exit
 BatteryHub.exe --json     # print a JSON array of devices and battery levels, then exit
 BatteryHub.exe --dump     # every HID collection, HID devices that could not be opened, all USB devices (also ones
                                # without a HID interface) and Bluetooth devices; also saved to %TEMP%\BatteryHub-dump.txt
-BatteryHub.exe --report   # open the "Request support for a device" window
 BatteryHub.exe --demo     # sample devices of every brand instead of real ones (screenshots, checking colors)
 BatteryHub.exe --quit     # close the running instance
 ```
@@ -325,13 +272,7 @@ also accepts `--help`. `--json` prints a stable array that scripts and bar widge
 `graceSec` is how long the app keeps showing the last known level while the device is asleep.
 Adding new fields is backwards compatible.
 
-**Device not shown?** Right-click the widget or tray icon and choose **Request support for a device...**. Pick the device, check
-what will be sent (it is shown word for word: the device name, its type, its USB/HID ids and interface layout, and your optional
-name and notes) and click **Send**. It goes on the public list at [krisgfx.com/tools](https://krisgfx.com/tools/#requested) and
-opens or updates a GitHub issue. **Copy full report** puts the complete `--dump` on the clipboard for the issue.
-Report data is sent only when you click Send. Official Windows builds can also contact GitHub
-to check for updates, as described in [Updates on Windows](#updates-on-windows); update checks
-do not send device or battery information.
+**Device not shown?** Run `BatteryHub.exe --dump` and use its HID and USB lists to add a driver under `src/drivers/` (see CONTRIBUTING.md for how drivers are structured). The app makes no network connections.
 
 ## Build
 
@@ -340,22 +281,19 @@ You need [MinGW-w64](https://www.mingw-w64.org/), e.g. from [MSYS2](https://www.
 ```
 make                                      # development build, version 0.0.0
 build.bat                                 # plain cmd with g++ and windres on PATH
-make VERSION=1.2.3 CHANNEL=test            # versioned build, official updates disabled
+make VERSION=1.2.3 CHANNEL=test            # versioned build
 build.bat 1.2.3 test                       # equivalent versioned cmd build
-make test VERSION=1.2.3 CHANNEL=test       # device and updater regression tests
+make test VERSION=1.2.3 CHANNEL=test       # device regression tests
 ```
 
 To build the installer and portable zip, install [Inno Setup](https://jrsoftware.org/isinfo.php),
 first build with the intended version (for example `make VERSION=1.2.3 CHANNEL=test`), then run
 `powershell -File installer\build-installer.ps1 -Version 1.2.3`. Packaging rejects a version that
 differs from the executable. It downloads the pinned
-HeadsetControl release and verifies its checksum. GitHub Actions does all of this automatically:
-pushing a tag like `v1.0.0` publishes a release with the installer, the portable zip and the
-HeadsetControl source (as its GPL license requires).
+HeadsetControl release and verifies its checksum. If you share the installer, include the HeadsetControl source as its GPL licence requires.
 
 Windows builds also need PowerShell for generating the shared executable/resource version.
-The official repository's version tags build with `CHANNEL=stable`; local builds default to
-`dev`. Forks and pull requests do not enable official updates automatically.
+Local builds default to `CHANNEL=dev`.
 
 `BatteryHub.exe` on its own also works. Without `headsetcontrol.exe` next to it (or on `PATH`) you
 just lose the extra headsets.

@@ -234,3 +234,8 @@ BatteryHub could not reopen. Please start it manually or repair the installation
 BatteryHub is up to date. = 
 BatteryHub update = 
 BatteryHub will close briefly while the update is installed. = 
+Headset =
+Mouse =
+Keyboard =
+Phone =
+Controller =

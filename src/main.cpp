@@ -885,25 +885,19 @@ flyout::Model BuildFlyoutModel() {
     else if (charging == 1) m.text.summary = T(L"1 device charging");
     else if (charging > 1) m.text.summary = TF(L"{count} devices charging", { { L"count", std::to_wstring(charging) } });
     else m.text.summary = T(L"All devices are fine");
-    m.text.settings = T(L"All settings");
-    m.text.refresh = T(L"Refresh now");
     m.text.emptyTitle = T(L"Looking for devices");
     m.text.emptyBody = T(L"Turn a device on or plug in its receiver.");
-    if (m.devices.size() > 6)
-        m.text.more = TF(L"{count} more in All settings", { { L"count", std::to_wstring(m.devices.size() - 6) } });
-    // Six quick toggles, three per row as in Quick Settings.
-    m.toggles.push_back({ ID_RING_STYLE, T(L"Charge rings"), 0xEA3A, g_ringStyle });
-    m.toggles.push_back({ ID_LEFT_SIDE, T(L"On the left"), 0xE8E4, g_leftSide });
-    m.toggles.push_back({ ID_BRAND_COLORS, T(L"Brand colors"), 0xE790, g_brandColors });
-    m.toggles.push_back({ ID_DIM_SLEEPING, T(L"Dim sleeping"), 0xE708, g_dimSleeping });
-    m.toggles.push_back({ ID_RECORD_HISTORY, T(L"Battery history"), 0xE81C, g_recordHistory });
-    m.toggles.push_back({ ID_AUTOSTART, T(L"Start with Windows"), 0xE768, AutostartEnabled() });
+    m.text.headset = T(L"Headset");
+    m.text.mouse = T(L"Mouse");
+    m.text.keyboard = T(L"Keyboard");
+    m.text.phone = T(L"Phone");
+    m.text.gamepad = T(L"Controller");
     return m;
 }
 
 void OpenSettings(settings_window::Page page = settings_window::Page::Taskbar);
 
-void OnFlyoutCommand(flyout::Command cmd, UINT id, const std::wstring& key) {
+void OnFlyoutCommand(flyout::Command cmd, const std::wstring& key) {
     switch (cmd) {
         case flyout::Command::Refresh: G435RequestRead(); SetEvent(g_refreshEvt); break;
         case flyout::Command::Settings: OpenSettings(); break;
@@ -912,17 +906,6 @@ void OnFlyoutCommand(flyout::Command cmd, UINT id, const std::wstring& key) {
             if (it != g_entries.end()) battery_history::Show(g_hwnd, key, DisplayName(it->second));
             break;
         }
-        case flyout::Command::Toggle:
-            switch (id) {
-                case ID_RING_STYLE: SetRingStyle(!g_ringStyle); break;
-                case ID_LEFT_SIDE: SetLeftSide(!g_leftSide); break;
-                case ID_BRAND_COLORS: SetBrandColors(!g_brandColors); break;
-                case ID_DIM_SLEEPING: SetDimSleeping(!g_dimSleeping); break;
-                case ID_RECORD_HISTORY: g_recordHistory = !g_recordHistory; SaveRecordHistory(g_recordHistory); break;
-                case ID_AUTOSTART: SetAutostart(!AutostartEnabled()); break;
-            }
-            RefreshFlyout();
-            break;
     }
 }
 

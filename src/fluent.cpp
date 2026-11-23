@@ -238,6 +238,74 @@ void Painter::Glyph(wchar_t g, float size, D2D1_RECT_F r, D2D1_COLOR_F c, float 
     if (rotation != 0) rt_->SetTransform(base);
 }
 
+void Painter::Ellipse(float cx, float cy, float rx, float ry, D2D1_COLOR_F c) {
+    rt_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), rx, ry), Brush(c));
+}
+
+namespace {
+ID2D1PathGeometry* Path(const D2D1_POINT_2F* pts, size_t count, bool closed) {
+    ID2D1PathGeometry* g = nullptr;
+    ID2D1GeometrySink* sink = nullptr;
+    if (count < 2 || !Factory() || FAILED(Factory()->CreatePathGeometry(&g))) return nullptr;
+    if (FAILED(g->Open(&sink))) { Release(g); return nullptr; }
+    sink->BeginFigure(pts[0], closed ? D2D1_FIGURE_BEGIN_FILLED : D2D1_FIGURE_BEGIN_HOLLOW);
+    sink->AddLines(pts + 1, (UINT32)(count - 1));
+    sink->EndFigure(closed ? D2D1_FIGURE_END_CLOSED : D2D1_FIGURE_END_OPEN);
+    sink->Close();
+    Release(sink);
+    return g;
+}
+}  // namespace
+
+void Painter::Polygon(const D2D1_POINT_2F* pts, size_t count, D2D1_COLOR_F fill) {
+    ID2D1PathGeometry* g = Path(pts, count, true);
+    if (!g) return;
+    rt_->FillGeometry(g, Brush(fill));
+    Release(g);
+}
+
+void Painter::Outline(const D2D1_POINT_2F* pts, size_t count, D2D1_COLOR_F c, float width) {
+    ID2D1PathGeometry* g = Path(pts, count, true);
+    if (!g) return;
+    rt_->DrawGeometry(g, Brush(c), width);
+    Release(g);
+}
+
+void Painter::Line(D2D1_POINT_2F a, D2D1_POINT_2F b, D2D1_COLOR_F c, float width, bool dotted) {
+    static ID2D1StrokeStyle* dots = nullptr;
+    if (dotted && !dots && Factory()) {
+        float dashes[] = { 1, 2 };
+        Factory()->CreateStrokeStyle(D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_FLAT,
+                                                                 D2D1_LINE_JOIN_MITER, 10, D2D1_DASH_STYLE_CUSTOM, 0),
+                                     dashes, 2, &dots);
+    }
+    rt_->DrawLine(a, b, Brush(c), width, dotted ? dots : nullptr);
+}
+
+void Painter::Arc(D2D1_POINT_2F from, D2D1_POINT_2F to, float radius, D2D1_COLOR_F c, float width) {
+    ID2D1PathGeometry* g = nullptr;
+    ID2D1GeometrySink* sink = nullptr;
+    if (!Factory() || FAILED(Factory()->CreatePathGeometry(&g))) return;
+    if (SUCCEEDED(g->Open(&sink))) {
+        sink->BeginFigure(from, D2D1_FIGURE_BEGIN_HOLLOW);
+        sink->AddArc(D2D1::ArcSegment(to, D2D1::SizeF(radius, radius), 0, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+        sink->Close();
+        Release(sink);
+        ID2D1StrokeStyle* round = nullptr;
+        Factory()->CreateStrokeStyle(D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND), nullptr, 0, &round);
+        rt_->DrawGeometry(g, Brush(c), width, round);
+        Release(round);
+    }
+    Release(g);
+}
+
+void Painter::Transform(const D2D1_MATRIX_3X2_F& m) {
+    rt_->SetTransform(D2D1::Matrix3x2F(m._11, m._12, m._21, m._22, m._31, m._32) * D2D1::Matrix3x2F::Scale(scale, scale));
+}
+
+void Painter::ResetTransform() { rt_->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale)); }
+
 void Painter::Clip(D2D1_RECT_F r) { rt_->PushAxisAlignedClip(r, D2D1_ANTIALIAS_MODE_ALIASED); }
 void Painter::Unclip() { rt_->PopAxisAlignedClip(); }
 

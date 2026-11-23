@@ -50,6 +50,14 @@ public:
               int align = 0, bool wrap = false);
     float TextWidth(const std::wstring& s, float size, DWRITE_FONT_WEIGHT weight);
     void Glyph(wchar_t g, float size, D2D1_RECT_F r, D2D1_COLOR_F c, float rotation = 0);
+    void Ellipse(float cx, float cy, float rx, float ry, D2D1_COLOR_F c);
+    void Polygon(const D2D1_POINT_2F* pts, size_t count, D2D1_COLOR_F fill);
+    void Outline(const D2D1_POINT_2F* pts, size_t count, D2D1_COLOR_F c, float width = 1);
+    void Line(D2D1_POINT_2F a, D2D1_POINT_2F b, D2D1_COLOR_F c, float width = 1, bool dotted = false);
+    void Arc(D2D1_POINT_2F from, D2D1_POINT_2F to, float radius, D2D1_COLOR_F c, float width);
+    // Extra transform (in DIPs) applied after the DPI scale, e.g. an isometric plane; Reset() drops it.
+    void Transform(const D2D1_MATRIX_3X2_F& m);
+    void ResetTransform();
     void Clip(D2D1_RECT_F r);
     void Unclip();
     ID2D1HwndRenderTarget* Target() const { return rt_; }

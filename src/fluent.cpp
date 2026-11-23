@@ -147,21 +147,23 @@ wchar_t BatteryGlyph(int percent, bool charging) {
 bool Painter::Begin(HWND wnd) {
     if (wnd_ != wnd) {
         Release(brush_);
-        Release(rt_);
+        Release(window_);
         wnd_ = wnd;
     }
-    if (!rt_) {
+    if (!window_) {
         RECT rc;
         GetClientRect(wnd, &rc);
         D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
             D2D1_RENDER_TARGET_TYPE_DEFAULT,
             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96, 96);
         if (!Factory() || FAILED(Factory()->CreateHwndRenderTarget(
-                              props, D2D1::HwndRenderTargetProperties(wnd, D2D1::SizeU(rc.right, rc.bottom)), &rt_)))
+                              props, D2D1::HwndRenderTargetProperties(wnd, D2D1::SizeU(rc.right, rc.bottom)), &window_)))
             return false;
-        rt_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-        rt_->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 0), &brush_);
+        window_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+        window_->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 0), &brush_);
+        generation_++;
     }
+    rt_ = window_;
     rt_->BeginDraw();
     rt_->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale));
     rt_->Clear(D2D1::ColorF(0, 0, 0, 0));  // transparent: the backdrop shows
@@ -169,15 +171,46 @@ bool Painter::Begin(HWND wnd) {
 }
 
 void Painter::End() {
-    if (!rt_) return;
-    if (rt_->EndDraw() == (HRESULT)D2DERR_RECREATE_TARGET) {
+    if (!window_) return;
+    if (window_->EndDraw() == (HRESULT)D2DERR_RECREATE_TARGET) {
         Release(brush_);
-        Release(rt_);
+        Release(window_);
+        rt_ = nullptr;
     }
 }
 
 void Painter::Resize(UINT width, UINT height) {
-    if (rt_) rt_->Resize(D2D1::SizeU(width, height));
+    if (!window_) return;
+    window_->Resize(D2D1::SizeU(width, height));
+    generation_++;
+}
+
+bool Painter::BeginLayer() {
+    if (!window_ || layer_) return false;
+    // Same size and format as the window; it shares the window target's brushes.
+    if (FAILED(window_->CreateCompatibleRenderTarget(nullptr, nullptr, nullptr, D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_NONE, &layer_)))
+        return false;
+    rt_ = layer_;
+    rt_->BeginDraw();
+    rt_->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale));
+    rt_->Clear(D2D1::ColorF(0, 0, 0, 0));
+    return true;
+}
+
+ID2D1Bitmap* Painter::EndLayer() {
+    ID2D1Bitmap* bitmap = nullptr;
+    if (!layer_) return nullptr;
+    if (SUCCEEDED(layer_->EndDraw())) layer_->GetBitmap(&bitmap);
+    Release(layer_);
+    rt_ = window_;
+    return bitmap;
+}
+
+void Painter::DrawLayer(ID2D1Bitmap* layer) {
+    if (!layer) return;
+    rt_->SetTransform(D2D1::Matrix3x2F::Identity());  // at the origin, pixel for pixel
+    rt_->DrawBitmap(layer, nullptr, alpha, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, nullptr);
+    rt_->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale));
 }
 
 ID2D1SolidColorBrush* Painter::Brush(D2D1_COLOR_F c) {
@@ -271,6 +304,58 @@ void Painter::Outline(const D2D1_POINT_2F* pts, size_t count, D2D1_COLOR_F c, fl
     Release(g);
 }
 
+namespace {
+ID2D1GradientStopCollection* Stops(ID2D1RenderTarget* rt, D2D1_COLOR_F c0, D2D1_COLOR_F c1) {
+    D2D1_GRADIENT_STOP stops[2];
+    stops[0].position = 0;
+    stops[0].color = c0;
+    stops[1].position = 1;
+    stops[1].color = c1;
+    ID2D1GradientStopCollection* coll = nullptr;
+    rt->CreateGradientStopCollection(stops, 2, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP, &coll);
+    return coll;
+}
+}  // namespace
+
+void Painter::PolygonGradient(const D2D1_POINT_2F* pts, size_t count, D2D1_POINT_2F from, D2D1_POINT_2F to, D2D1_COLOR_F c0,
+                              D2D1_COLOR_F c1) {
+    ID2D1PathGeometry* g = Path(pts, count, true);
+    ID2D1GradientStopCollection* stops = g ? Stops(rt_, c0, c1) : nullptr;
+    ID2D1LinearGradientBrush* brush = nullptr;
+    if (stops) {
+        D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES props;
+        props.startPoint = from;
+        props.endPoint = to;
+        rt_->CreateLinearGradientBrush(&props, nullptr, stops, &brush);
+    }
+    if (brush) {
+        brush->SetOpacity(alpha);
+        rt_->FillGeometry(g, brush);
+    }
+    Release(brush);
+    Release(stops);
+    Release(g);
+}
+
+void Painter::RadialEllipse(float cx, float cy, float rx, float ry, D2D1_COLOR_F centre, D2D1_COLOR_F edge) {
+    ID2D1GradientStopCollection* stops = Stops(rt_, centre, edge);
+    ID2D1RadialGradientBrush* brush = nullptr;
+    if (stops) {
+        D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES props;
+        props.center = D2D1::Point2F(cx, cy);
+        props.gradientOriginOffset = D2D1::Point2F(0, 0);
+        props.radiusX = rx;
+        props.radiusY = ry;
+        rt_->CreateRadialGradientBrush(&props, nullptr, stops, &brush);
+    }
+    if (brush) {
+        brush->SetOpacity(alpha);
+        rt_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), rx, ry), brush);
+    }
+    Release(brush);
+    Release(stops);
+}
+
 void Painter::Line(D2D1_POINT_2F a, D2D1_POINT_2F b, D2D1_COLOR_F c, float width, bool dotted) {
     static ID2D1StrokeStyle* dots = nullptr;
     if (dotted && !dots && Factory()) {
@@ -280,6 +365,18 @@ void Painter::Line(D2D1_POINT_2F a, D2D1_POINT_2F b, D2D1_COLOR_F c, float width
                                      dashes, 2, &dots);
     }
     rt_->DrawLine(a, b, Brush(c), width, dotted ? dots : nullptr);
+}
+
+void Painter::Polyline(const D2D1_POINT_2F* pts, size_t count, D2D1_COLOR_F c, float width) {
+    static ID2D1StrokeStyle* round = nullptr;
+    if (!round && Factory())
+        Factory()->CreateStrokeStyle(D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
+                                                                 D2D1_LINE_JOIN_ROUND),
+                                     nullptr, 0, &round);
+    ID2D1PathGeometry* g = Path(pts, count, false);
+    if (!g) return;
+    rt_->DrawGeometry(g, Brush(c), width, round);
+    Release(g);
 }
 
 void Painter::Arc(D2D1_POINT_2F from, D2D1_POINT_2F to, float radius, D2D1_COLOR_F c, float width) {

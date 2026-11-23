@@ -53,17 +53,35 @@ public:
     void Ellipse(float cx, float cy, float rx, float ry, D2D1_COLOR_F c);
     void Polygon(const D2D1_POINT_2F* pts, size_t count, D2D1_COLOR_F fill);
     void Outline(const D2D1_POINT_2F* pts, size_t count, D2D1_COLOR_F c, float width = 1);
+    // A polygon filled with a linear gradient running from `from` (colour c0) to `to` (colour c1).
+    void PolygonGradient(const D2D1_POINT_2F* pts, size_t count, D2D1_POINT_2F from, D2D1_POINT_2F to, D2D1_COLOR_F c0,
+                         D2D1_COLOR_F c1);
+    // An ellipse that fades from `centre` to `edge` (soft shadows and glows).
+    void RadialEllipse(float cx, float cy, float rx, float ry, D2D1_COLOR_F centre, D2D1_COLOR_F edge);
     void Line(D2D1_POINT_2F a, D2D1_POINT_2F b, D2D1_COLOR_F c, float width = 1, bool dotted = false);
+    // An open path through the points, with round ends and joins.
+    void Polyline(const D2D1_POINT_2F* pts, size_t count, D2D1_COLOR_F c, float width = 1);
     void Arc(D2D1_POINT_2F from, D2D1_POINT_2F to, float radius, D2D1_COLOR_F c, float width);
     // Extra transform (in DIPs) applied after the DPI scale, e.g. an isometric plane; Reset() drops it.
     void Transform(const D2D1_MATRIX_3X2_F& m);
     void ResetTransform();
     void Clip(D2D1_RECT_F r);
     void Unclip();
-    ID2D1HwndRenderTarget* Target() const { return rt_; }
+    // Off-screen layers, for a picture that is costly to draw and seldom changes. Between BeginLayer() and
+    // EndLayer() everything is drawn into a transparent layer of the window's size; EndLayer() returns it
+    // (the caller releases it). DrawLayer() puts it into the window. A layer is only good for the
+    // Generation() it was made in: the number changes when the window's target is rebuilt or resized.
+    bool BeginLayer();
+    ID2D1Bitmap* EndLayer();
+    void DrawLayer(ID2D1Bitmap* layer);
+    unsigned Generation() const { return generation_; }
+    ID2D1HwndRenderTarget* Target() const { return window_; }
 
 private:
-    ID2D1HwndRenderTarget* rt_ = nullptr;
+    ID2D1HwndRenderTarget* window_ = nullptr;
+    ID2D1RenderTarget* rt_ = nullptr;  // where drawing goes: the window, or the layer being recorded
+    ID2D1BitmapRenderTarget* layer_ = nullptr;
+    unsigned generation_ = 0;
     ID2D1SolidColorBrush* brush_ = nullptr;
     HWND wnd_ = nullptr;
     ID2D1SolidColorBrush* Brush(D2D1_COLOR_F c);

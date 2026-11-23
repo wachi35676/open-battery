@@ -1,7 +1,8 @@
 #pragma once
-// The panel that opens when the taskbar strip (or a tray icon) is left-clicked: the main device large,
-// the others in a list, quick toggles and a few actions. Drawn with Direct2D on Windows 11's own
-// Acrylic or Mica backdrop. Right-click keeps the full menu, which "All settings" also opens.
+// The panel that opens when the taskbar strip (or a tray icon) is left-clicked, in the style of the
+// Windows 11 flyouts (Quick Settings, Bluetooth & devices): a card per device with its battery, quick
+// toggle tiles, and a footer with refresh and settings. Drawn with Direct2D on the Mica (or Acrylic)
+// system backdrop. Right-click keeps the full menu, which the settings button also opens.
 #include <windows.h>
 #include <functional>
 #include <string>
@@ -10,11 +11,11 @@
 
 namespace flyout {
 struct Device {
-    std::wstring key, name, via, state;  // state: "Charging", "Asleep, last known level", ...
+    std::wstring key, name, state;  // state: "LIGHTSPEED receiver", "Charging", "Asleep, last known level"...
     DeviceKind kind = DeviceKind::Other;
     bool bluetooth = false;
-    int percent = -1;                     // -1: unknown
-    std::wstring levelText;               // shown instead of the number for coarse levels
+    int percent = -1;                // -1: unknown
+    std::wstring levelText;          // shown instead of the number for coarse levels
     bool charging = false, full = false, dim = false, low = false;
 };
 struct Toggle {
@@ -24,17 +25,17 @@ struct Toggle {
     bool on = false;
 };
 struct Labels {
-    std::wstring greeting, summary, settings, refresh, history, exit, on, off, emptyTitle, emptyBody, more;
+    std::wstring summary, settings, refresh, emptyTitle, emptyBody, more, historyHint;
 };
 struct Model {
-    std::vector<Device> devices;  // in the user's order; the first is shown large unless another was picked
-    std::vector<Toggle> toggles;  // two per row
+    std::vector<Device> devices;  // in the user's order
+    std::vector<Toggle> toggles;  // three per row
     Labels text;
     bool light = false;           // follows the taskbar theme
-    bool mica = false;            // Mica instead of Acrylic
+    bool mica = true;             // Mica, or Acrylic
 };
-enum class Command { Refresh, Exit, Settings, History, Toggle };
-// `id` is the toggle's id (Command::Toggle); `key` the device shown large (Command::History).
+enum class Command { Refresh, Settings, History, Toggle };
+// `id` is the toggle's id (Command::Toggle); `key` the clicked device (Command::History).
 using Handler = std::function<void(Command cmd, UINT id, const std::wstring& key)>;
 
 // Shows the panel next to `anchor` (the clicked strip or the cursor), on that monitor.

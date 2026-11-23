@@ -5,6 +5,7 @@
 #include <dwrite.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <map>
 #include <tuple>
 
@@ -16,18 +17,19 @@ constexpr DWORD kDwmCorners = 33;     // DWMWA_WINDOW_CORNER_PREFERENCE
 constexpr DWORD kDwmBackdrop = 38;    // DWMWA_SYSTEMBACKDROP_TYPE
 constexpr int kBackdropMica = 2, kBackdropAcrylic = 3, kCornersRound = 2;
 
-// Layout, in DIPs.
-constexpr float kWidth = 368, kPad = 16, kHeaderH = 54, kHeroH = 132, kRowH = 54, kTileH = 50, kGap = 8,
-                kActionsH = 72, kRadius = 20;
-constexpr size_t kMaxRows = 6;
+// Layout in DIPs, measured from Windows 11's Quick Settings flyout at 100% scale: 360 wide, 24 px side
+// and 23 px top padding, 96 x 48 tiles 12 px apart with the label in the 48 px under each, 16 px icons,
+// 4 px control corners, a 48 px footer on the bare backdrop with its button 30 px from the right edge.
+constexpr float kWidth = 360, kPadX = 24, kPadTop = 23, kPadBottom = 24, kRowH = 64, kRowGap = 4, kSectionGap = 24,
+                kTileH = 48, kTileLabelH = 48, kTileGap = 12, kFooterH = 48, kCardRadius = 4, kControlRadius = 4,
+                kIcon = 16;
+constexpr size_t kMaxRows = 6, kTileColumns = 3;
 
-// Animation, in ms: the window rises a little while its sections fade in one after another.
-constexpr float kRiseMs = 220, kSectionMs = 240, kStaggerMs = 35, kSwapMs = 160, kSpinMs = 600;
-constexpr float kRiseDip = 10;
+// Opening: the window rises from the taskbar while the content fades in, like the system flyouts.
+constexpr float kRiseMs = 200, kFadeMs = 150, kRiseDip = 12;
 
 // Segoe Fluent Icons / Segoe MDL2 Assets code points.
-constexpr wchar_t kGlyphSettings = 0xE713, kGlyphRefresh = 0xE72C, kGlyphHistory = 0xE81C, kGlyphPower = 0xE7E8,
-                  kGlyphBolt = 0xE945, kGlyphCheck = 0xE73E, kGlyphDevices = 0xE772;
+constexpr wchar_t kGlyphSettings = 0xE713, kGlyphRefresh = 0xE72C, kGlyphDevices = 0xE772, kGlyphBatteryUnknown = 0xE996;
 
 template <class T> void Release(T*& p) {
     if (p) { p->Release(); p = nullptr; }
@@ -40,19 +42,20 @@ ID2D1HwndRenderTarget* g_rt;
 ID2D1SolidColorBrush* g_brush;
 std::map<std::tuple<std::wstring, float, int, bool>, IDWriteTextFormat*> g_formats;
 std::wstring g_iconFont = L"Segoe Fluent Icons";
+const wchar_t* kUi = L"Segoe UI Variable Text";
 
 flyout::Model g_model;
 flyout::Handler g_handler;
-std::wstring g_heroKey;  // device the user picked to show large (kept while the app runs)
 RECT g_anchor{};
-float g_heightDip = 400;
-float g_scale = 1;       // pixels per DIP
-int g_finalX = 0, g_finalY = 0, g_riseDir = 1;  // riseDir: +1 rises up (taskbar below), -1 drops down
+float g_scale = 1;  // pixels per DIP
+int g_finalX = 0, g_finalY = 0, g_riseDir = 1;  // riseDir: +1 rises up (taskbar below), -1 drops down, 0 none
 bool g_motion = true;
-ULONGLONG g_openAt = 0, g_swapAt = 0, g_spinAt = 0, g_closedAt = 0;
+ULONGLONG g_openAt = 0, g_closedAt = 0, g_spinAt = 0;
 bool g_timer = false;
+int g_stage = 99;   // build stage (WB_FLYOUT_STAGE), for checking the backdrop as parts are added
+float g_alpha = 1;  // content opacity while it fades in
 
-enum class HitKind { Settings, Refresh, History, Exit, Toggle, Device };
+enum class HitKind { Settings, Refresh, Toggle, Device };
 struct Hit {
     D2D1_RECT_F r;
     HitKind kind;
@@ -61,29 +64,44 @@ struct Hit {
 };
 std::vector<Hit> g_hits;
 POINT g_mouse{ -1, -1 };
+bool g_down = false;
 int g_pressed = -1;
 
-float g_alpha = 1;  // opacity of the section being drawn
-float g_dy = 0;     // its vertical offset while it fades in
-
-// ---- colours ----------------------------------------------------------------------------------
-
-struct Palette {
-    D2D1_COLOR_F text, sub, faint, card, cardHover, cardPress, border, accent, tint, icon, iconOn, iconOnText, low;
-};
+// ---- colours: the Windows 11 (Fluent) theme resources for dark and light mode ----------------------
 
 D2D1_COLOR_F Rgba(float r, float g, float b, float a) { return D2D1::ColorF(r, g, b, a); }
 
+struct Palette {
+    D2D1_COLOR_F text, textSecondary, textTertiary, layer, card, cardHover, cardPressed, cardStroke, control,
+        controlHover, controlPressed, controlStroke, subtleHover, subtlePressed, divider, accent, accentHover,
+        accentPressed, onAccent, critical;
+};
+
+// The system accent colour as the flyouts use it: "Light 2" in dark mode, "Dark 1" in light mode.
+D2D1_COLOR_F Accent(bool light) {
+    BYTE palette[32] = {};
+    DWORD size = sizeof(palette);
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Accent",
+                     L"AccentPalette", RRF_RT_REG_BINARY, nullptr, palette, &size) == ERROR_SUCCESS && size >= 32) {
+        const BYTE* c = palette + (light ? 4 * 4 : 1 * 4);
+        return Rgba(c[0] / 255.f, c[1] / 255.f, c[2] / 255.f, 1);
+    }
+    return light ? Rgba(0, .373f, .722f, 1) : Rgba(.298f, .761f, 1, 1);  // the default blue
+}
+
 Palette Colors() {
+    D2D1_COLOR_F a = Accent(g_model.light);
     if (g_model.light)
-        return { Rgba(.10f, .11f, .12f, 1), Rgba(.10f, .11f, .12f, .62f), Rgba(.10f, .11f, .12f, .42f),
-                 Rgba(1, 1, 1, .55f), Rgba(1, 1, 1, .75f), Rgba(1, 1, 1, .90f), Rgba(1, 1, 1, .85f),
-                 Rgba(.07f, .52f, .35f, 1), Rgba(.30f, .78f, .55f, .20f), Rgba(1, 1, 1, .85f),
-                 Rgba(.10f, .11f, .12f, 1), Rgba(1, 1, 1, 1), Rgba(.77f, .12f, .16f, 1) };
-    return { Rgba(1, 1, 1, 1), Rgba(1, 1, 1, .64f), Rgba(1, 1, 1, .40f),
-             Rgba(1, 1, 1, .065f), Rgba(1, 1, 1, .11f), Rgba(1, 1, 1, .15f), Rgba(1, 1, 1, .09f),
-             Rgba(.35f, .87f, .60f, 1), Rgba(.30f, .85f, .58f, .16f), Rgba(1, 1, 1, .10f),
-             Rgba(1, 1, 1, .94f), Rgba(.09f, .10f, .11f, 1), Rgba(1, .45f, .45f, 1) };
+        return { Rgba(0, 0, 0, .896f),    Rgba(0, 0, 0, .606f),   Rgba(0, 0, 0, .446f),   Rgba(1, 1, 1, .50f),
+                 Rgba(1, 1, 1, .70f),     Rgba(1, 1, 1, .90f),    Rgba(1, 1, 1, .45f),    Rgba(0, 0, 0, .0578f),
+                 Rgba(1, 1, 1, .70f),     Rgba(.976f, .976f, .976f, .5f), Rgba(.976f, .976f, .976f, .3f),
+                 Rgba(0, 0, 0, .0578f),   Rgba(0, 0, 0, .0373f),  Rgba(0, 0, 0, .0241f),  Rgba(0, 0, 0, .0803f),
+                 a, Rgba(a.r, a.g, a.b, .9f), Rgba(a.r, a.g, a.b, .8f), Rgba(1, 1, 1, 1), Rgba(.769f, .169f, .110f, 1) };
+    return { Rgba(1, 1, 1, 1),         Rgba(1, 1, 1, .786f),   Rgba(1, 1, 1, .544f),   Rgba(1, 1, 1, .036f),
+             Rgba(1, 1, 1, .0512f),    Rgba(1, 1, 1, .0837f),  Rgba(1, 1, 1, .0326f),  Rgba(0, 0, 0, .10f),
+             Rgba(1, 1, 1, .0605f),    Rgba(1, 1, 1, .0837f),  Rgba(1, 1, 1, .0326f),  Rgba(1, 1, 1, .0698f),
+             Rgba(1, 1, 1, .0605f),    Rgba(1, 1, 1, .0419f),  Rgba(1, 1, 1, .0837f),
+             a, Rgba(a.r, a.g, a.b, .9f), Rgba(a.r, a.g, a.b, .8f), Rgba(0, 0, 0, 1), Rgba(1, .6f, .643f, 1) };
 }
 
 ID2D1SolidColorBrush* Brush(D2D1_COLOR_F c) {
@@ -113,8 +131,9 @@ IDWriteTextFormat* Format(const std::wstring& family, float size, DWRITE_FONT_WE
     return f;
 }
 
-const wchar_t* kUi = L"Segoe UI Variable Text";
-const wchar_t* kDisplay = L"Segoe UI Variable Display";
+// Windows 11 type ramp: Caption 12, Body 14, Body Strong 14 semibold.
+IDWriteTextFormat* Caption() { return Format(kUi, 12, DWRITE_FONT_WEIGHT_NORMAL); }
+IDWriteTextFormat* Body() { return Format(kUi, 14, DWRITE_FONT_WEIGHT_NORMAL); }
 
 float TextWidth(const std::wstring& s, IDWriteTextFormat* f) {
     IDWriteTextLayout* l = nullptr;
@@ -125,15 +144,13 @@ float TextWidth(const std::wstring& s, IDWriteTextFormat* f) {
     return m.widthIncludingTrailingWhitespace;
 }
 
-// Draws one line of text in `r`, vertically centred; `align` 0 left, 1 centre, 2 right.
+// One line (or a wrapped block) in `r`, vertically centred; `align` 0 left, 1 centre, 2 right.
 void Text(const std::wstring& s, IDWriteTextFormat* f, D2D1_RECT_F r, D2D1_COLOR_F c, int align = 0) {
     if (!f || s.empty()) return;
     f->SetTextAlignment(align == 0 ? DWRITE_TEXT_ALIGNMENT_LEADING
                         : align == 1 ? DWRITE_TEXT_ALIGNMENT_CENTER
                                      : DWRITE_TEXT_ALIGNMENT_TRAILING);
     f->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-    r.top += g_dy;
-    r.bottom += g_dy;
     g_rt->DrawTextW(s.c_str(), (UINT32)s.size(), f, r, Brush(c), D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
 
@@ -153,19 +170,23 @@ wchar_t DeviceGlyph(DeviceKind k, bool bluetooth) {
     }
 }
 
-// ---- shapes -----------------------------------------------------------------------------------
-
-D2D1_RECT_F Shift(D2D1_RECT_F r) { return { r.left, r.top + g_dy, r.right, r.bottom + g_dy }; }
-
-void Card(D2D1_RECT_F r, float radius, D2D1_COLOR_F fill, D2D1_COLOR_F border) {
-    r = Shift(r);
-    g_rt->FillRoundedRectangle(D2D1::RoundedRect(r, radius, radius), Brush(fill));
-    D2D1_RECT_F in{ r.left + .5f, r.top + .5f, r.right - .5f, r.bottom - .5f };
-    g_rt->DrawRoundedRectangle(D2D1::RoundedRect(in, radius - .5f, radius - .5f), Brush(border), 1);
+// The battery icons Windows uses (Battery0..10, BatteryCharging0..10).
+wchar_t BatteryGlyph(int percent, bool charging) {
+    if (percent < 0) return kGlyphBatteryUnknown;
+    int step = std::clamp((percent + 5) / 10, 0, 10);
+    if (charging) return step == 10 ? 0xE83E : (wchar_t)(0xE85A + step);
+    return step == 10 ? 0xE83F : (wchar_t)(0xE850 + step);
 }
 
-void Circle(float cx, float cy, float rad, D2D1_COLOR_F fill) {
-    g_rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy + g_dy), rad, rad), Brush(fill));
+// ---- shapes and hit testing -------------------------------------------------------------------
+
+void Fill(D2D1_RECT_F r, float radius, D2D1_COLOR_F c) {
+    g_rt->FillRoundedRectangle(D2D1::RoundedRect(r, radius, radius), Brush(c));
+}
+
+void Stroke(D2D1_RECT_F r, float radius, D2D1_COLOR_F c) {
+    D2D1_RECT_F in{ r.left + .5f, r.top + .5f, r.right - .5f, r.bottom - .5f };
+    g_rt->DrawRoundedRectangle(D2D1::RoundedRect(in, radius - .5f, radius - .5f), Brush(c), 1);
 }
 
 bool Inside(const D2D1_RECT_F& r) {
@@ -173,36 +194,23 @@ bool Inside(const D2D1_RECT_F& r) {
     return x >= r.left && x < r.right && y >= r.top && y < r.bottom;
 }
 
-// Fill for something clickable: resting, hovered or pressed.
-D2D1_COLOR_F Interactive(const Palette& p, const D2D1_RECT_F& r, D2D1_COLOR_F rest) {
-    if (!Inside(r)) return rest;
-    bool pressed = g_pressed >= 0 && (GetKeyState(VK_LBUTTON) & 0x8000);
-    return pressed ? p.cardPress : p.cardHover;
+// 0 resting, 1 hovered, 2 pressed.
+int State(const D2D1_RECT_F& r) { return !Inside(r) ? 0 : g_down ? 2 : 1; }
+
+// ---- layout -----------------------------------------------------------------------------------
+
+size_t RowCount() { return std::min(g_model.devices.size(), kMaxRows); }
+bool MoreLine() { return g_model.devices.size() > kMaxRows; }
+size_t TileRows() { return (g_model.toggles.size() + kTileColumns - 1) / kTileColumns; }
+
+float BodyHeight() {
+    size_t rows = std::max<size_t>(RowCount(), 1);  // the empty state is one card
+    float h = kPadTop + rows * kRowH + (rows - 1) * kRowGap + (MoreLine() ? 24 : 0);
+    if (TileRows()) return h + kSectionGap + TileRows() * (kTileH + kTileLabelH);  // the last label area ends it
+    return h + kPadBottom;
 }
 
-// ---- model helpers ----------------------------------------------------------------------------
-
-int HeroIndex() {
-    for (size_t i = 0; i < g_model.devices.size(); i++)
-        if (g_model.devices[i].key == g_heroKey) return (int)i;
-    return g_model.devices.empty() ? -1 : 0;
-}
-
-size_t RowCount() {
-    size_t n = g_model.devices.size();
-    return n > 1 ? std::min(n - 1, kMaxRows) : 0;
-}
-
-float ContentHeight() {
-    size_t rows = RowCount();
-    bool more = g_model.devices.size() > kMaxRows + 1;
-    size_t tileRows = (g_model.toggles.size() + 1) / 2;
-    float h = kPad + kHeaderH + kHeroH;
-    if (rows) h += kGap + rows * kRowH + (more ? 22 : 0);
-    if (tileRows) h += kGap + 4 + tileRows * kTileH + (tileRows - 1) * kGap;
-    h += kGap + kActionsH + kPad - 6;
-    return h;
-}
+float ContentHeight() { return BodyHeight() + kFooterH; }
 
 float Ease(float t) {  // ease-out cubic
     t = std::clamp(t, 0.f, 1.f);
@@ -211,121 +219,72 @@ float Ease(float t) {  // ease-out cubic
 
 float Elapsed(ULONGLONG since) { return since ? (float)(GetTickCount64() - since) : 1e9f; }
 
-// Sets g_alpha / g_dy for section `i` of the opening animation.
-void Section(int i) {
-    if (!g_motion) { g_alpha = 1; g_dy = 0; return; }
-    float t = Ease((Elapsed(g_openAt) - i * kStaggerMs) / kSectionMs);
-    g_alpha = t;
-    g_dy = (1 - t) * 8 * g_riseDir;
-}
-
 bool Animating() {
     if (!g_motion) return false;
-    float open = Elapsed(g_openAt), lastSection = kStaggerMs * 4 + kSectionMs;
-    return open < std::max(kRiseMs, lastSection) || Elapsed(g_swapAt) < kSwapMs || Elapsed(g_spinAt) < kSpinMs;
+    return Elapsed(g_openAt) < std::max(kRiseMs, kFadeMs) + 16 || Elapsed(g_spinAt) < 500;
 }
 
 // ---- drawing ----------------------------------------------------------------------------------
 
-void DrawHero(const Palette& p, D2D1_RECT_F r) {
-    int hi = HeroIndex();
-    if (hi < 0) {  // nothing found yet: an invitation instead of an empty card
-        Card(r, kRadius, p.card, p.border);
-        Glyph(kGlyphDevices, 44, { r.right - 110, r.top, r.right - 18, r.bottom }, p.faint);
-        Text(g_model.text.emptyTitle, Format(kUi, 16, DWRITE_FONT_WEIGHT_SEMI_BOLD),
-             { r.left + 18, r.top + 34, r.right - 120, r.top + 60 }, p.text);
-        Text(g_model.text.emptyBody, Format(kUi, 12, DWRITE_FONT_WEIGHT_NORMAL),
-             { r.left + 18, r.top + 62, r.right - 120, r.top + 98 }, p.sub);
-        return;
-    }
-    const auto& d = g_model.devices[hi];
-    bool tinted = d.charging || d.full;
-    Card(r, kRadius, tinted ? p.tint : p.card, p.border);
-    float swap = g_motion ? Ease(Elapsed(g_swapAt) / kSwapMs) : 1;
-    float keep = g_alpha;
-    g_alpha *= swap;
-    D2D1_COLOR_F numColor = d.dim ? p.sub : d.low ? p.low : p.text;
-    float x = r.left + 20;
-    Text(d.name, Format(kUi, 13, DWRITE_FONT_WEIGHT_NORMAL), { x, r.top + 16, r.right - 128, r.top + 36 }, p.sub);
-    if (d.percent >= 0 && d.levelText.empty()) {
-        std::wstring num = std::to_wstring(d.percent);
-        IDWriteTextFormat* big = Format(kDisplay, 56, DWRITE_FONT_WEIGHT_SEMI_LIGHT);
-        float w = TextWidth(num, big);
-        Text(num, big, { x - 2, r.top + 34, x + w + 4, r.top + 98 }, numColor);
-        Text(L"%", Format(kDisplay, 26, DWRITE_FONT_WEIGHT_SEMI_LIGHT), { x + w + 1, r.top + 54, x + w + 40, r.top + 92 },
-             p.faint);
-    } else {
-        std::wstring t = !d.levelText.empty() ? d.levelText : L"--";
-        Text(t, Format(kDisplay, 40, DWRITE_FONT_WEIGHT_SEMI_LIGHT), { x - 1, r.top + 38, r.right - 128, r.top + 94 },
-             numColor);
-    }
-    // State line: a bolt or check mark in green while on power, a small dot otherwise.
-    float sy = r.top + 100;
-    if (d.charging || d.full) {
-        Glyph(d.full ? kGlyphCheck : kGlyphBolt, 13, { x - 2, sy, x + 14, sy + 18 }, p.accent);
-        Text(d.state, Format(kUi, 12, DWRITE_FONT_WEIGHT_SEMI_BOLD), { x + 17, sy, r.right - 128, sy + 18 }, p.accent);
-    } else {
-        Circle(x + 4, sy + 9, 3, p.faint);
-        Text(d.state, Format(kUi, 12, DWRITE_FONT_WEIGHT_NORMAL), { x + 14, sy, r.right - 128, sy + 18 }, p.sub);
-    }
-    // The device itself, large, with a soft contact shadow under it.
-    float gx = r.right - 124, gy = r.top + 6;
-    g_rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(gx + 56, gy + 106 + g_dy), 28, 3.5f),
-                      Brush(Rgba(0, 0, 0, g_model.light ? .08f : .18f)));
-    Glyph(DeviceGlyph(d.kind, d.bluetooth), 78, { gx, gy, gx + 112, gy + 112 }, d.dim ? p.sub : p.text);
-    g_alpha = keep;
-}
-
-void DrawRow(const Palette& p, const flyout::Device& d, D2D1_RECT_F r) {
+void DrawDevice(const Palette& p, const flyout::Device& d, D2D1_RECT_F r) {
     g_hits.push_back({ r, HitKind::Device, 0, d.key });
-    D2D1_COLOR_F fill = Interactive(p, r, Rgba(0, 0, 0, 0));
-    if (fill.a > 0) {
-        D2D1_RECT_F s = Shift(r);
-        g_rt->FillRoundedRectangle(D2D1::RoundedRect(s, 16, 16), Brush(fill));
-    }
+    int st = State(r);
+    Fill(r, kCardRadius, st == 2 ? p.cardPressed : st == 1 ? p.cardHover : p.card);
+    Stroke(r, kCardRadius, p.cardStroke);
     float cy = (r.top + r.bottom) / 2;
-    Circle(r.left + 28, cy, 19, p.icon);
-    Glyph(DeviceGlyph(d.kind, d.bluetooth), 17, { r.left + 9, cy - 19, r.left + 47, cy + 19 }, d.dim ? p.sub : p.text);
-    float tx = r.left + 58, right = r.right - 70;
-    Text(d.name, Format(kUi, 13, DWRITE_FONT_WEIGHT_SEMI_BOLD), { tx, cy - 19, right, cy + 1 }, d.dim ? p.sub : p.text);
-    Text(d.state, Format(kUi, 11, d.charging || d.full ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL),
-         { tx, cy + 1, right, cy + 19 }, d.charging || d.full ? p.accent : p.sub);
-    D2D1_COLOR_F numColor = d.dim ? p.sub : d.low ? p.low : p.text;
-    if (d.percent >= 0 && d.levelText.empty()) {
-        IDWriteTextFormat* pct = Format(kUi, 12, DWRITE_FONT_WEIGHT_NORMAL);
-        float pw = TextWidth(L"%", pct);
-        Text(L"%", pct, { r.right - 12 - pw, cy - 6, r.right - 12, cy + 10 }, p.faint);
-        Text(std::to_wstring(d.percent), Format(kDisplay, 19, DWRITE_FONT_WEIGHT_NORMAL),
-             { r.right - 90, cy - 12, r.right - 13 - pw, cy + 12 }, numColor, 2);
+    D2D1_COLOR_F main = d.dim ? p.textTertiary : p.text;
+    Glyph(DeviceGlyph(d.kind, d.bluetooth), kIcon, { r.left + 12, cy - 12, r.left + 36, cy + 12 }, main);
+
+    // Right: battery icon and level, as on the Bluetooth & devices page.
+    std::wstring level = !d.levelText.empty() ? d.levelText : d.percent >= 0 ? std::to_wstring(d.percent) + L"%" : L"";
+    float lw = level.empty() ? 0 : TextWidth(level, Body());
+    float right = r.right - 16;
+    if (!level.empty()) Text(level, Body(), { right - lw - 2, cy - 11, right, cy + 11 }, d.low ? p.critical : main, 2);
+    float gx = right - lw - 6 - 22;
+    Glyph(BatteryGlyph(d.percent, d.charging || d.full), kIcon, { gx, cy - 11, gx + 22, cy + 11 }, d.low ? p.critical : main);
+
+    float tx = r.left + 48, tr = gx - 8;
+    Text(d.name, Body(), { tx, cy - 20, tr, cy + 1 }, main);
+    Text(d.state, Caption(), { tx, cy + 1, tr, cy + 19 }, p.textSecondary);
+}
+
+void DrawEmpty(const Palette& p, D2D1_RECT_F r) {
+    Fill(r, kCardRadius, p.card);
+    Stroke(r, kCardRadius, p.cardStroke);
+    float cy = (r.top + r.bottom) / 2;
+    Glyph(kGlyphDevices, kIcon, { r.left + 12, cy - 12, r.left + 36, cy + 12 }, p.textSecondary);
+    Text(g_model.text.emptyTitle, Body(), { r.left + 48, cy - 20, r.right - 16, cy + 1 }, p.text);
+    Text(g_model.text.emptyBody, Caption(), { r.left + 48, cy + 1, r.right - 16, cy + 19 }, p.textSecondary);
+}
+
+// A Quick Settings tile: accent-filled when on, a quiet control when off, its label underneath.
+void DrawTile(const Palette& p, const flyout::Toggle& t, D2D1_RECT_F tile) {
+    D2D1_RECT_F hit{ tile.left, tile.top, tile.right, tile.bottom + kTileLabelH };
+    g_hits.push_back({ hit, HitKind::Toggle, t.id });
+    int st = State(hit);
+    if (t.on) {
+        Fill(tile, kControlRadius, st == 2 ? p.accentPressed : st == 1 ? p.accentHover : p.accent);
     } else {
-        Text(!d.levelText.empty() ? d.levelText : L"--", Format(kUi, 13, DWRITE_FONT_WEIGHT_SEMI_BOLD),
-             { r.right - 90, cy - 12, r.right - 12, cy + 12 }, numColor, 2);
+        Fill(tile, kControlRadius, st == 2 ? p.controlPressed : st == 1 ? p.controlHover : p.control);
+        Stroke(tile, kControlRadius, p.controlStroke);
     }
+    Glyph(t.glyph, kIcon, tile, t.on ? p.onAccent : p.text);
+    // Label centred 16 px under the tile (one line), wrapping to a second line like Quick Settings.
+    Text(t.label, Format(kUi, 12, DWRITE_FONT_WEIGHT_NORMAL, true),
+         { tile.left - 6, tile.bottom + 4, tile.right + 6, tile.bottom + 28 }, p.text, 1);
 }
 
-void DrawTile(const Palette& p, const flyout::Toggle& t, D2D1_RECT_F r) {
-    g_hits.push_back({ r, HitKind::Toggle, t.id });
-    Card(r, 18, Interactive(p, r, p.card), p.border);
-    float cy = (r.top + r.bottom) / 2;
-    Circle(r.left + 25, cy, 15, t.on ? p.iconOn : p.icon);
-    Glyph(t.glyph, 14, { r.left + 10, cy - 15, r.left + 40, cy + 15 }, t.on ? p.iconOnText : p.text);
-    const std::wstring& state = t.on ? g_model.text.on : g_model.text.off;
-    IDWriteTextFormat* sf = Format(kUi, 11, DWRITE_FONT_WEIGHT_SEMI_BOLD);
-    float sw = TextWidth(state, sf);
-    Text(state, sf, { r.right - 12 - sw, cy - 9, r.right - 12, cy + 9 }, t.on ? p.accent : p.faint, 2);
-    Text(t.label, Format(kUi, 12, DWRITE_FONT_WEIGHT_SEMI_BOLD, true), { r.left + 48, cy - 17, r.right - 16 - sw, cy + 17 },
-         p.text);  // long labels wrap onto a second line
-}
-
-void DrawAction(const Palette& p, HitKind kind, wchar_t glyph, const std::wstring& label, float cx, float top) {
-    D2D1_RECT_F r{ cx - 40, top + 6, cx + 40, top + kActionsH - 6 };
+void DrawIconButton(const Palette& p, HitKind kind, wchar_t glyph, D2D1_RECT_F r, float spin = 0) {
     g_hits.push_back({ r, kind });
-    if (Inside(r)) {
-        D2D1_RECT_F s = Shift(r);
-        g_rt->FillRoundedRectangle(D2D1::RoundedRect(s, 16, 16), Brush(Interactive(p, r, p.card)));
+    int st = State(r);
+    if (st) Fill(r, kControlRadius, st == 2 ? p.subtlePressed : p.subtleHover);
+    if (spin > 0) {
+        float cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+        g_rt->SetTransform(D2D1::Matrix3x2F::Rotation(spin, D2D1::Point2F(cx, cy)) *
+                           D2D1::Matrix3x2F::Scale(g_scale, g_scale));
     }
-    Glyph(glyph, 18, { cx - 20, top + 14, cx + 20, top + 38 }, p.text);
-    Text(label, Format(kUi, 11, DWRITE_FONT_WEIGHT_NORMAL), { cx - 40, top + 40, cx + 40, top + 58 }, p.sub, 1);
+    Glyph(glyph, 14, r, p.text);  // the footer settings glyph measures 14 px in Quick Settings
+    g_rt->SetTransform(D2D1::Matrix3x2F::Scale(g_scale, g_scale));
 }
 
 void Draw() {
@@ -333,74 +292,51 @@ void Draw() {
     Palette p = Colors();
     g_rt->BeginDraw();
     g_rt->SetTransform(D2D1::Matrix3x2F::Scale(g_scale, g_scale));
-    g_rt->Clear(D2D1::ColorF(0, 0, 0, 0));
+    g_rt->Clear(D2D1::ColorF(0, 0, 0, 0));  // transparent: the backdrop shows
     g_hits.clear();
-    const float x = kPad, w = kWidth - 2 * kPad;
-    float y = kPad;
+    g_alpha = g_motion && g_stage >= 5 ? Ease(Elapsed(g_openAt) / kFadeMs) : 1;
+    const float body = BodyHeight(), x = kPadX, w = kWidth - 2 * kPadX;
 
-    // Header: greeting, one-line summary, and the way to every other setting.
-    Section(0);
-    Text(g_model.text.greeting, Format(kUi, 12, DWRITE_FONT_WEIGHT_NORMAL), { x + 4, y, x + w - 56, y + 18 }, p.sub);
-    Text(g_model.text.summary, Format(kUi, 16, DWRITE_FONT_WEIGHT_SEMI_BOLD), { x + 4, y + 17, x + w - 56, y + 41 },
-         p.text);
-    D2D1_RECT_F settings{ x + w - 40, y, x + w, y + 40 };
-    g_hits.push_back({ settings, HitKind::Settings });
-    Card(settings, 20, Interactive(p, settings, p.card), p.border);
-    Glyph(kGlyphSettings, 16, settings, p.text);
-    y += kHeaderH;
+    if (g_stage >= 1) {
+        // A light layer over the body; the footer stays on the bare backdrop, divided by a hairline.
+        g_rt->FillRectangle(D2D1::RectF(0, 0, kWidth, body), Brush(p.layer));
+        g_rt->FillRectangle(D2D1::RectF(0, body, kWidth, body + 1), Brush(p.divider));
+    }
 
-    Section(1);
-    DrawHero(p, { x, y, x + w, y + kHeroH });
-    y += kHeroH;
-
-    size_t rows = RowCount();
-    if (rows) {
-        Section(2);
-        y += kGap;
-        int hi = HeroIndex();
-        size_t drawn = 0;
-        for (size_t i = 0; i < g_model.devices.size() && drawn < rows; i++) {
-            if ((int)i == hi) continue;
-            DrawRow(p, g_model.devices[i], { x - 4, y, x + w + 4, y + kRowH });
-            y += kRowH;
-            drawn++;
-        }
-        if (g_model.devices.size() > kMaxRows + 1) {
-            Text(g_model.text.more, Format(kUi, 11, DWRITE_FONT_WEIGHT_NORMAL), { x + 4, y, x + w, y + 20 }, p.faint);
-            y += 22;
+    float y = kPadTop;
+    if (g_stage >= 2) {
+        size_t rows = RowCount();
+        if (!rows) DrawEmpty(p, { x, y, x + w, y + kRowH });
+        for (size_t i = 0; i < rows; i++)
+            DrawDevice(p, g_model.devices[i], { x, y + i * (kRowH + kRowGap), x + w, y + i * (kRowH + kRowGap) + kRowH });
+        size_t shown = std::max<size_t>(rows, 1);
+        y += shown * kRowH + (shown - 1) * kRowGap;
+        if (MoreLine()) {
+            Text(g_model.text.more, Caption(), { x + 4, y + 2, x + w, y + 22 }, p.textTertiary);
+            y += 24;
         }
     }
 
-    if (!g_model.toggles.empty()) {
-        Section(3);
-        y += kGap + 4;
-        float tw = (w - kGap) / 2;
+    if (g_stage >= 3 && TileRows()) {
+        y += kSectionGap;
+        float tw = (w - kTileGap * (kTileColumns - 1)) / kTileColumns;
         for (size_t i = 0; i < g_model.toggles.size(); i++) {
-            float tx = x + (i % 2) * (tw + kGap);
-            DrawTile(p, g_model.toggles[i], { tx, y, tx + tw, y + kTileH });
-            if (i % 2 == 1 || i + 1 == g_model.toggles.size()) y += kTileH + (i + 1 < g_model.toggles.size() ? kGap : 0);
+            size_t row = i / kTileColumns, col = i % kTileColumns;
+            float tx = x + col * (tw + kTileGap), ty = y + row * (kTileH + kTileLabelH);
+            DrawTile(p, g_model.toggles[i], { tx, ty, tx + tw, ty + kTileH });
         }
     }
 
-    // Actions: history of the device shown large, a round refresh button in the middle, exit.
-    Section(4);
-    y += kGap;
-    DrawAction(p, HitKind::History, kGlyphHistory, g_model.text.history, x + w * 0.18f, y);
-    DrawAction(p, HitKind::Exit, kGlyphPower, g_model.text.exit, x + w * 0.82f, y);
-    float cx = x + w / 2, cy = y + kActionsH / 2;
-    D2D1_RECT_F refresh{ cx - 28, cy - 28, cx + 28, cy + 28 };
-    g_hits.push_back({ refresh, HitKind::Refresh });
-    Card(refresh, 28, Interactive(p, refresh, g_model.light ? Rgba(1, 1, 1, .85f) : Rgba(1, 1, 1, .12f)), p.border);
-    float spin = g_motion && Elapsed(g_spinAt) < kSpinMs ? Ease(Elapsed(g_spinAt) / kSpinMs) * 360 : 0;
-    if (spin > 0) {
-        D2D1::Matrix3x2F base = D2D1::Matrix3x2F::Scale(g_scale, g_scale);
-        g_rt->SetTransform(D2D1::Matrix3x2F::Rotation(spin, D2D1::Point2F(cx, cy + g_dy)) * base);
+    if (g_stage >= 4) {
+        float fy = body, cy = fy + kFooterH / 2;
+        Text(g_model.text.summary, Caption(), { kPadX, fy, kWidth - 110, fy + kFooterH }, p.textSecondary);
+        float spin = g_motion && Elapsed(g_spinAt) < 500 ? Ease(Elapsed(g_spinAt) / 500) * 360 : 0;
+        // Icon buttons centred 30 px (settings) and 70 px (refresh) from the right edge.
+        DrawIconButton(p, HitKind::Refresh, kGlyphRefresh, { kWidth - 88, cy - 16, kWidth - 52, cy + 16 }, spin);
+        DrawIconButton(p, HitKind::Settings, kGlyphSettings, { kWidth - 48, cy - 16, kWidth - 12, cy + 16 });
     }
-    Glyph(kGlyphRefresh, 20, refresh, p.text);
-    g_rt->SetTransform(D2D1::Matrix3x2F::Scale(g_scale, g_scale));
 
     g_alpha = 1;
-    g_dy = 0;
     if (g_rt->EndDraw() == (HRESULT)D2DERR_RECREATE_TARGET) {
         Release(g_brush);
         Release(g_rt);
@@ -431,24 +367,16 @@ void StartTimer() {
 }
 
 void ApplyWindowPos() {
-    float rise = g_motion ? (1 - Ease(Elapsed(g_openAt) / kRiseMs)) * kRiseDip * g_scale : 0;
+    float rise = g_motion && g_stage >= 5 ? (1 - Ease(Elapsed(g_openAt) / kRiseMs)) * kRiseDip * g_scale : 0;
     SetWindowPos(g_wnd, HWND_TOPMOST, g_finalX, g_finalY + (int)std::lround(rise) * g_riseDir, 0, 0,
                  SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
-void ApplyTheme() {
-    BOOL dark = g_model.light ? FALSE : TRUE;
-    DwmSetWindowAttribute(g_wnd, kDwmDarkMode, &dark, sizeof(dark));
-    int backdrop = g_model.mica ? kBackdropMica : kBackdropAcrylic;
-    DwmSetWindowAttribute(g_wnd, kDwmBackdrop, &backdrop, sizeof(backdrop));
-    SetWindowPos(g_wnd, nullptr, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
-}
-
 // DWM keeps drawing Mica's plain grey fallback (32,32,32) instead of the wallpaper-tinted material
 // (30,32,36 here, as in Settings) unless the backdrop attributes are applied with frame changes that
-// may activate the window: once before it is shown (ApplyTheme) and once more after it is up. Either
-// one alone leaves it grey (found by trying each combination).
-void ReapplyBackdrop() {
+// may activate the window: once before it is shown and once more after it is up. Either one alone
+// leaves it grey (found by trying each combination).
+void ApplyBackdrop() {
     BOOL dark = g_model.light ? FALSE : TRUE;
     DwmSetWindowAttribute(g_wnd, kDwmDarkMode, &dark, sizeof(dark));
     int corners = kCornersRound;
@@ -471,8 +399,7 @@ void Place() {
     SetWindowPos(g_wnd, nullptr, mi.rcWork.left, mi.rcWork.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     if (getDpi) dpi = getDpi(g_wnd);
     g_scale = dpi / 96.f;
-    g_heightDip = ContentHeight();
-    int w = (int)std::lround(kWidth * g_scale), h = (int)std::lround(g_heightDip * g_scale);
+    int w = (int)std::lround(kWidth * g_scale), h = (int)std::lround(ContentHeight() * g_scale);
     int gap = (int)std::lround(12 * g_scale);
     const RECT& wa = mi.rcWork;
     const RECT& a = g_anchor;
@@ -483,8 +410,8 @@ void Place() {
         g_riseDir = 0;
     } else {
         x = std::clamp((int)((a.left + a.right) / 2 - w / 2), (int)wa.left + gap, (int)wa.right - gap - w);
-        if (a.bottom <= wa.top + 4) { y = wa.top + gap; g_riseDir = -1; }           // taskbar at the top
-        else if (a.top >= wa.bottom - 4) { y = wa.bottom - gap - h; g_riseDir = 1; } // taskbar at the bottom
+        if (a.bottom <= wa.top + 4) { y = wa.top + gap; g_riseDir = -1; }            // taskbar at the top
+        else if (a.top >= wa.bottom - 4) { y = wa.bottom - gap - h; g_riseDir = 1; }  // taskbar at the bottom
         else { y = std::max((int)wa.top + gap, (int)a.top - gap - h); g_riseDir = 1; }  // tray icon / elsewhere
     }
     g_finalX = x;
@@ -497,14 +424,7 @@ void Activate(const Hit& hit) {
     flyout::Handler handler = g_handler;
     switch (hit.kind) {
         case HitKind::Settings: flyout::Hide(); if (handler) handler(flyout::Command::Settings, 0, L""); break;
-        case HitKind::Exit: flyout::Hide(); if (handler) handler(flyout::Command::Exit, 0, L""); break;
-        case HitKind::History: {
-            int hi = HeroIndex();
-            std::wstring key = hi >= 0 ? g_model.devices[hi].key : L"";
-            flyout::Hide();
-            if (handler && !key.empty()) handler(flyout::Command::History, 0, key);
-            break;
-        }
+        case HitKind::Device: flyout::Hide(); if (handler) handler(flyout::Command::History, 0, hit.key); break;
         case HitKind::Refresh:
             g_spinAt = GetTickCount64();
             StartTimer();
@@ -512,13 +432,6 @@ void Activate(const Hit& hit) {
             break;
         case HitKind::Toggle:
             if (handler) handler(flyout::Command::Toggle, hit.id, L"");
-            break;
-        case HitKind::Device:
-            if (hit.key != g_heroKey) {
-                g_heroKey = hit.key;
-                g_swapAt = GetTickCount64();
-                StartTimer();
-            }
             break;
     }
     if (g_wnd) InvalidateRect(g_wnd, nullptr, FALSE);
@@ -544,7 +457,7 @@ LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_ERASEBKGND: return 1;
-        case WM_TIMER: {
+        case WM_TIMER:
             if (Elapsed(g_openAt) < kRiseMs + 20) ApplyWindowPos();
             InvalidateRect(h, nullptr, FALSE);
             if (!Animating()) {
@@ -553,7 +466,6 @@ LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 ApplyWindowPos();
             }
             return 0;
-        }
         case WM_ACTIVATE:
             if (LOWORD(wp) == WA_INACTIVE && IsWindowVisible(h)) {
                 flyout::Hide();
@@ -570,24 +482,22 @@ LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             TRACKMOUSEEVENT t{ sizeof(t), TME_LEAVE, h, 0 };
             TrackMouseEvent(&t);
             if (before != after) InvalidateRect(h, nullptr, FALSE);
-            SetCursor(LoadCursorW(nullptr, after >= 0 ? IDC_HAND : IDC_ARROW));
             return 0;
         }
-        case WM_SETCURSOR:
-            if (LOWORD(lp) == HTCLIENT) return TRUE;  // set in WM_MOUSEMOVE
-            break;
         case WM_MOUSELEAVE:
             g_mouse = { -1, -1 };
-            g_pressed = -1;
+            g_down = false;
             InvalidateRect(h, nullptr, FALSE);
             return 0;
         case WM_LBUTTONDOWN:
+            g_down = true;
             g_pressed = HitAt({ (short)LOWORD(lp), (short)HIWORD(lp) });
             SetCapture(h);
             InvalidateRect(h, nullptr, FALSE);
             return 0;
         case WM_LBUTTONUP: {
             ReleaseCapture();
+            g_down = false;
             int hit = HitAt({ (short)LOWORD(lp), (short)HIWORD(lp) });
             int pressed = g_pressed;
             g_pressed = -1;
@@ -607,6 +517,7 @@ LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 
 bool Init(HINSTANCE inst) {
     if (g_wnd) return true;
+    if (const char* s = getenv("WB_FLYOUT_STAGE")) g_stage = atoi(s);
     if (!g_d2d && FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &g_d2d))) return false;
     if (!g_dw && FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
                                             reinterpret_cast<IUnknown**>(&g_dw))))
@@ -630,12 +541,8 @@ bool Init(HINSTANCE inst) {
     g_wnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, wc.lpszClassName, L"BatteryHub", WS_POPUP, 0, 0, 10, 10,
                             nullptr, nullptr, inst, nullptr);
     if (!g_wnd) return false;
-    int corners = kCornersRound;
-    DwmSetWindowAttribute(g_wnd, kDwmCorners, &corners, sizeof(corners));
-    MARGINS m{ -1, -1, -1, -1 };
-    DwmExtendFrameIntoClientArea(g_wnd, &m);
-    int backdrop = kBackdropAcrylic;
-    if (FAILED(DwmSetWindowAttribute(g_wnd, kDwmBackdrop, &backdrop, sizeof(backdrop)))) {
+    int backdrop = kBackdropMica;
+    if (FAILED(DwmSetWindowAttribute(g_wnd, kDwmBackdrop, &backdrop, sizeof(backdrop)))) {  // before Windows 11 22H2
         DestroyWindow(g_wnd);
         g_wnd = nullptr;
         return false;
@@ -656,18 +563,19 @@ bool Show(HINSTANCE inst, const RECT& anchor, const Model& model, Handler handle
     SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &anim, 0);
     g_motion = anim != FALSE;
     g_mouse = { -1, -1 };
+    g_down = false;
     g_pressed = -1;
-    g_spinAt = g_swapAt = 0;
-    ApplyTheme();
+    g_spinAt = 0;
+    ApplyBackdrop();
     Place();
     g_openAt = GetTickCount64();
-    if (g_motion) ApplyWindowPos();
+    ApplyWindowPos();
     ShowWindow(g_wnd, SW_SHOW);
     SetForegroundWindow(g_wnd);
     InvalidateRect(g_wnd, nullptr, FALSE);
     UpdateWindow(g_wnd);
-    ReapplyBackdrop();
-    if (g_motion) StartTimer();
+    ApplyBackdrop();
+    if (g_motion && g_stage >= 5) StartTimer();
     return true;
 }
 
@@ -676,7 +584,7 @@ void Update(const Model& model) {
     bool resize = model.devices.size() != g_model.devices.size() || model.toggles.size() != g_model.toggles.size();
     bool theme = model.light != g_model.light || model.mica != g_model.mica;
     g_model = model;
-    if (theme) ApplyTheme();
+    if (theme) ApplyBackdrop();
     if (resize) Place();
     InvalidateRect(g_wnd, nullptr, FALSE);
 }

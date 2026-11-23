@@ -863,7 +863,6 @@ flyout::Model BuildFlyoutModel() {
         flyout::Device d;
         d.key = e->st.key;
         d.name = DisplayName(*e);
-        d.via = T(e->st.via);
         d.kind = e->st.kind;
         d.bluetooth = e->st.via == L"Bluetooth";
         bool offline = !e->st.connected;
@@ -878,10 +877,6 @@ flyout::Model BuildFlyoutModel() {
         if (d.low && lowName.empty()) lowName = d.name;
         m.devices.push_back(d);
     }
-    SYSTEMTIME now;
-    GetLocalTime(&now);
-    m.text.greeting = now.wHour < 5 ? T(L"Good evening") : now.wHour < 12 ? T(L"Good morning")
-                    : now.wHour < 18 ? T(L"Good afternoon") : T(L"Good evening");
     if (m.devices.empty()) m.text.summary = T(L"No devices yet");
     else if (!lowName.empty()) m.text.summary = TF(L"{name} is low", { { L"name", lowName } });
     else if (charging == 1) m.text.summary = T(L"1 device charging");
@@ -889,19 +884,16 @@ flyout::Model BuildFlyoutModel() {
     else m.text.summary = T(L"All devices are fine");
     m.text.settings = T(L"All settings");
     m.text.refresh = T(L"Refresh now");
-    m.text.history = T(L"History");
-    m.text.exit = T(L"Exit");
-    m.text.on = T(L"On");
-    m.text.off = T(L"Off");
     m.text.emptyTitle = T(L"Looking for devices");
     m.text.emptyBody = T(L"Turn a device on or plug in its receiver.");
-    if (m.devices.size() > 7)
-        m.text.more = TF(L"{count} more in All settings", { { L"count", std::to_wstring(m.devices.size() - 7) } });
-    if (g_wantWidget) {
-        m.toggles.push_back({ ID_RING_STYLE, T(L"Charge rings"), 0xEA3A, g_ringStyle });
-        m.toggles.push_back({ ID_LEFT_SIDE, T(L"On the left"), 0xE8E4, g_leftSide });
-    }
+    if (m.devices.size() > 6)
+        m.text.more = TF(L"{count} more in All settings", { { L"count", std::to_wstring(m.devices.size() - 6) } });
+    // Six quick toggles, three per row as in Quick Settings.
+    m.toggles.push_back({ ID_RING_STYLE, T(L"Charge rings"), 0xEA3A, g_ringStyle });
+    m.toggles.push_back({ ID_LEFT_SIDE, T(L"On the left"), 0xE8E4, g_leftSide });
     m.toggles.push_back({ ID_BRAND_COLORS, T(L"Brand colors"), 0xE790, g_brandColors });
+    m.toggles.push_back({ ID_DIM_SLEEPING, T(L"Dim sleeping"), 0xE708, g_dimSleeping });
+    m.toggles.push_back({ ID_RECORD_HISTORY, T(L"Battery history"), 0xE81C, g_recordHistory });
     m.toggles.push_back({ ID_AUTOSTART, T(L"Start with Windows"), 0xE768, AutostartEnabled() });
     return m;
 }
@@ -911,7 +903,6 @@ void ShowMenu();
 void OnFlyoutCommand(flyout::Command cmd, UINT id, const std::wstring& key) {
     switch (cmd) {
         case flyout::Command::Refresh: G435RequestRead(); SetEvent(g_refreshEvt); break;
-        case flyout::Command::Exit: DestroyWindow(g_hwnd); break;
         case flyout::Command::Settings: ShowMenu(); break;
         case flyout::Command::History: {
             auto it = g_entries.find(key);
@@ -923,6 +914,8 @@ void OnFlyoutCommand(flyout::Command cmd, UINT id, const std::wstring& key) {
                 case ID_RING_STYLE: SetRingStyle(!g_ringStyle); break;
                 case ID_LEFT_SIDE: SetLeftSide(!g_leftSide); break;
                 case ID_BRAND_COLORS: SetBrandColors(!g_brandColors); break;
+                case ID_DIM_SLEEPING: SetDimSleeping(!g_dimSleeping); break;
+                case ID_RECORD_HISTORY: g_recordHistory = !g_recordHistory; SaveRecordHistory(g_recordHistory); break;
                 case ID_AUTOSTART: SetAutostart(!AutostartEnabled()); break;
             }
             RefreshFlyout();

@@ -20,6 +20,10 @@
 // since each try cuts the audio. Reads are serialised across processes (the tray app and a
 // "--list" run), so two bootloader sessions never overlap.
 //
+// A read in the first seconds after the receiver is plugged in, before the headset has linked, is what
+// jams it (seen twice: a read a second after replugging jammed it, the same replug with nothing reading
+// did not). So the first read waits 30 seconds after the receiver appears, or after Windows starts.
+//
 // The headset reports no charging state (the GRS status byte and ATB 0 read the same on and off
 // the charger). Plugging the charger in raises the cell voltage by about 180-250 mV within
 // seconds, while normal use moves it by tens of mV between reads. So a rise of 100 mV between two
@@ -39,10 +43,13 @@ constexpr USHORT kVid = 0x046D, kPid = 0x0ACB;
 constexpr BYTE kReport = 6;
 constexpr ULONGLONG kReadEveryMs = 30ull * 60 * 1000;
 constexpr ULONGLONG kRetryEveryMs = 5ull * 60 * 1000;
+constexpr ULONGLONG kSettleMs = 30ull * 1000;  // let the headset link before the first read
 
 std::atomic<bool> g_forceRead{ false };
 bool g_haveReading = false;     // last attempt produced a voltage
 bool g_stuck = false;           // last attempt: the receiver answered only FF (needs a replug)
+ULONGLONG g_foundAt = 0;        // when the receiver appeared (0: already there when this process started)
+bool g_gone = false;            // the receiver was unplugged since this process started
 bool g_attempted = false;       // at least one attempt was made in this process
 int g_lastMv = 0;
 ULONGLONG g_lastAttempt = 0;
@@ -156,13 +163,17 @@ void G435RequestRead() { g_forceRead = true; }
 void PollG435(PollContext& ctx) {
     if (ctx.IsClaimed(kVid, kPid)) return;
     auto colls = ctx.Find(kVid, kPid, [](const HidColl& c) { return c.page() == 0xFFC0 && c.featLen() == 64; });
+    ULONGLONG now = GetTickCount64();
     if (colls.empty()) {  // receiver unplugged: forget the reading
-        g_haveReading = g_attempted = false;
+        g_haveReading = g_attempted = g_stuck = false;
+        g_gone = true;
+        g_foundAt = 0;
         return;
     }
     ctx.Claim(kVid, kPid);  // keep the generic fallbacks off this receiver
-
-    ULONGLONG now = GetTickCount64();
+    if (!g_foundAt && g_gone) g_foundAt = now;  // plugged back in
+    // Just plugged in, or Windows just started: no read yet (and nothing to show).
+    if ((g_foundAt && now - g_foundAt < kSettleMs) || now < kSettleMs) return;
     ULONGLONG wait = g_haveReading || g_stuck ? kReadEveryMs : kRetryEveryMs;
     if (g_forceRead.exchange(false) || !g_attempted || now - g_lastAttempt >= wait) {
         // One bootloader session at a time, also across processes; skip this poll if another runs.

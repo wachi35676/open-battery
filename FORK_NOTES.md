@@ -19,7 +19,7 @@ check mark for fully charged devices (#1383).
 | G435: a jammed receiver (only FF replies) keeps the headset visible, dimmed, with a replug hint; first read waits 30 s after a replug or boot; reads serialised across processes | a read right after plugging in jams the receiver |
 | *On the left (Windows 11 with centred icons)*: the widget between the taskbar's left edge (or the Widgets button) and the Start button | |
 | *Charge rings instead of percentages*: a ring around each device icon shows the charge; exact values stay in the tooltip | from our old Customize menu; device order and left placement already exist |
-| Click panel: a left click opens a Direct2D panel on the Mica (or Acrylic) system backdrop, with the main device large, the rest in a list, quick toggles and actions; right click keeps the full menu | `src/flyout.cpp`; needs Windows 11 22H2, otherwise the menu |
+| Click panel and settings window, replacing the right-click menu: Direct2D on the Mica (or Acrylic / Clear glass) backdrop, following light and dark mode; settings laid out like the Windows Settings app | `src/flyout.cpp`, `src/settings_window.cpp`, `src/fluent.cpp`; needs Windows 11 22H2 |
 | Visual Studio build (`build-msvc.cmd`), and a one-line MSVC compile fix in `razer_headset.cpp` | |
 
 ## Removed here
@@ -41,5 +41,5 @@ The file name stays `WirelessBattery.exe` so existing installs keep their *Start
 ## Settings
 
 Stored under `HKCU\Software\WirelessBattery` and changed from the right-click menu. This build adds `LeftSide`
-(the left placement), `RingStyle` (charge rings), `FlyoutMica` (Mica or Acrylic panel) and `G435LastMv`, `G435LastAt`, `G435Charging`, `G435ChargeSince`, `G435ChargePeak` and
+(the left placement), `RingStyle` (charge rings), `FlyoutBackdrop` (0 Mica, 1 Acrylic, 2 Clear glass) and `G435LastMv`, `G435LastAt`, `G435Charging`, `G435ChargeSince`, `G435ChargePeak` and
 `G435ChargePeakAt` (the last G435 reading and the charging estimate).

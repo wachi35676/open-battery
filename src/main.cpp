@@ -26,6 +26,9 @@
 #include "drivers/drivers.h"
 #include "widget.h"
 #include "flyout.h"
+#include "settings_window.h"
+#include "fluent.h"
+#include "app_version.h"
 
 namespace {
 
@@ -76,7 +79,7 @@ std::wstring g_widgetMonitor = L"all";  // which taskbars show the widget: "all"
 bool g_widgetBackground = false;  // draw a plate behind the taskbar text (transparent taskbar themes)
 bool g_stacked = false;      // icon above the percentage (menu option)
 bool g_ringStyle = false;    // charge rings instead of percentages (menu option)
-bool g_flyoutMica = true;    // the click panel on Mica (default) or Acrylic (menu option)
+int g_flyoutBackdrop = 0;    // click panel backdrop: 0 Mica, 1 Acrylic, 2 Clear glass (settings)
 bool g_leftSide = false;     // left end of a centred Windows 11 taskbar (menu option)
 bool g_brandColors = false;  // off by default; known brands get their color (Razer green, Logitech blue, ...)
 std::atomic<DWORD> g_pollIntervalMs{ 60 * 1000 };  // set from the menu, read by the worker thread
@@ -856,7 +859,7 @@ std::wstring DeviceState(const TrayEntry& e) {
 flyout::Model BuildFlyoutModel() {
     flyout::Model m;
     m.light = g_lightTaskbar;
-    m.mica = g_flyoutMica;
+    m.backdrop = (fluent::Backdrop)g_flyoutBackdrop;
     int charging = 0;
     std::wstring lowName;
     for (TrayEntry* e : OrderedEntries(true)) {
@@ -898,12 +901,12 @@ flyout::Model BuildFlyoutModel() {
     return m;
 }
 
-void ShowMenu();
+void OpenSettings(settings_window::Page page = settings_window::Page::Taskbar);
 
 void OnFlyoutCommand(flyout::Command cmd, UINT id, const std::wstring& key) {
     switch (cmd) {
         case flyout::Command::Refresh: G435RequestRead(); SetEvent(g_refreshEvt); break;
-        case flyout::Command::Settings: ShowMenu(); break;
+        case flyout::Command::Settings: OpenSettings(); break;
         case flyout::Command::History: {
             auto it = g_entries.find(key);
             if (it != g_entries.end()) battery_history::Show(g_hwnd, key, DisplayName(it->second));
@@ -925,6 +928,7 @@ void OnFlyoutCommand(flyout::Command cmd, UINT id, const std::wstring& key) {
 
 void RefreshFlyout() {
     if (flyout::Visible()) flyout::Update(BuildFlyoutModel());
+    settings_window::Refresh();
 }
 
 // Opens the panel by `anchor` (the clicked strip; null: the cursor, for tray icons). Falls back to the
@@ -938,190 +942,147 @@ void ShowFlyout(HWND anchor) {
         GetCursorPos(&pt);
         r = { pt.x, pt.y, pt.x + 1, pt.y + 1 };
     }
-    if (!flyout::Show(g_inst, r, BuildFlyoutModel(), OnFlyoutCommand)) ShowMenu();
+    if (!flyout::Show(g_inst, r, BuildFlyoutModel(), OnFlyoutCommand)) OpenSettings();
 }
 
-void SetFlyoutMica(bool on) {
-    g_flyoutMica = on;
-    SaveBoolSetting(L"FlyoutMica", on);
+bool ReadLightApps() {
+    DWORD v = 0, size = sizeof(v);
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                     L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &v, &size) != ERROR_SUCCESS)
+        return false;
+    return v != 0;
 }
 
-void ShowMenu() {
-    ApplyMenuTheme(g_lightTaskbar);
-    HMENU m = CreatePopupMenu();
-    std::vector<std::wstring> keys;  // device index -> device key; menu id ID_DEVICE_FIRST + index * DEV_STRIDE + command
-    std::vector<TrayEntry*> all = OrderedEntries(false), shown = OrderedEntries(true);
-    if (all.empty()) AppendMenuW(m, MF_STRING | MF_GRAYED, 0, T(L"No devices with battery info found"));
-    else AppendMenuW(m, MF_STRING | MF_GRAYED, 0, T(L"Point at a device to show, hide or move it"));
-    for (TrayEntry* e : all) {
-        const std::wstring& k = e->st.key;
-        UINT base = ID_DEVICE_FIRST + (UINT)keys.size() * DEV_STRIDE;
-        auto pos = std::find(shown.begin(), shown.end(), e);
-        bool canLeft = pos != shown.end() && pos != shown.begin();
-        bool canRight = pos != shown.end() && pos + 1 != shown.end();
-        HMENU sub = CreatePopupMenu();
-        AppendMenuW(sub, MF_STRING | (IsHidden(k) ? 0 : MF_CHECKED), base + DEV_TOGGLE,
-                    g_wantWidget ? T(L"Show on the taskbar") : T(L"Show in the tray"));
-        AppendMenuW(sub, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(sub, MF_STRING | (canLeft ? 0 : MF_GRAYED), base + DEV_LEFT, g_wantWidget ? T(L"Move left") : T(L"Move up"));
-        AppendMenuW(sub, MF_STRING | (canRight ? 0 : MF_GRAYED), base + DEV_RIGHT, g_wantWidget ? T(L"Move right") : T(L"Move down"));
-        AppendMenuW(sub, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(sub, MF_STRING, base + DEV_RENAME, T(L"Rename device..."));
-        AppendMenuW(sub, MF_STRING | (g_aliases.count(k) ? 0 : MF_GRAYED),
-                    base + DEV_RESET_NAME, T(L"Reset to original name"));
-        HMENU alertMenu = CreatePopupMenu();
-        int selectedThreshold = alerts::OverrideFor(g_alertOverrides, k);
-        AppendMenuW(alertMenu, MF_STRING | (selectedThreshold == alerts::kUseDefault ? MF_CHECKED : 0),
-                    base + DEV_ALERT_DEFAULT, T(L"Use default (15%)"));
-        AppendMenuW(alertMenu, MF_STRING | (selectedThreshold == alerts::kDisabled ? MF_CHECKED : 0),
-                    base + DEV_ALERT_OFF, T(L"Disable notifications"));
-        AppendMenuW(alertMenu, MF_SEPARATOR, 0, nullptr);
-        for (int i = 0; i < alerts::kThresholdCount; ++i) {
-            int level = alerts::kThresholds[i];
-            std::wstring label = std::to_wstring(level) + L"%";
-            AppendMenuW(alertMenu, MF_STRING | (selectedThreshold == level ? MF_CHECKED : 0),
-                        base + DEV_ALERT_FIRST + i, label.c_str());
-        }
-        AppendMenuW(sub, MF_POPUP, (UINT_PTR)alertMenu, T(L"Battery alerts"));
-        AppendMenuW(sub, MF_STRING, base + DEV_HISTORY, T(L"Battery history..."));
-        std::wstring line = DisplayName(*e) + L":  " + StatusText(*e) + L"   [" + T(e->st.via) + L"]";
-        AppendMenuW(m, MF_POPUP | (IsHidden(k) ? 0 : MF_CHECKED), (UINT_PTR)sub, line.c_str());
-        keys.push_back(k);
-    }
-    AppendMenuW(m, MF_STRING | (g_hideLastKnown ? MF_CHECKED : 0), ID_HIDE_LAST_KNOWN, T(L"Hide last known / asleep devices"));
-    AppendMenuW(m, MF_STRING | (g_showDisconnectedDevices ? MF_CHECKED : 0), ID_SHOW_DISCONNECTED, T(L"Show disconnected devices"));
-    AppendMenuW(m, MF_STRING | (g_dimSleeping ? MF_CHECKED : 0), ID_DIM_SLEEPING, T(L"Dim sleeping devices"));
-    AppendMenuW(m, MF_STRING | (g_recordHistory ? MF_CHECKED : 0), ID_RECORD_HISTORY, T(L"Record battery history"));
-    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING | (g_wantWidget ? MF_CHECKED : 0), ID_MODE_WIDGET, T(L"Show on the taskbar (icon + percentage)"));
-    AppendMenuW(m, MF_STRING | (!g_wantWidget ? MF_CHECKED : 0), ID_MODE_TRAY, T(L"Show as tray icons"));
-    CheckMenuRadioItem(m, ID_MODE_WIDGET, ID_MODE_TRAY, g_wantWidget ? ID_MODE_WIDGET : ID_MODE_TRAY, MF_BYCOMMAND);
-    UINT bgFlags = MF_STRING | (g_widgetBackground ? MF_CHECKED : 0) | (g_wantWidget ? 0 : MF_GRAYED);
-    AppendMenuW(m, bgFlags, ID_WIDGET_BACKGROUND, T(L"Background behind taskbar text (for transparent taskbars)"));
-    AppendMenuW(m, MF_STRING | (g_stacked ? MF_CHECKED : 0) | (g_wantWidget ? 0 : MF_GRAYED), ID_STACKED, T(L"Icons above percentages (narrower)"));
-    AppendMenuW(m, MF_STRING | (g_ringStyle ? MF_CHECKED : 0) | (g_wantWidget ? 0 : MF_GRAYED), ID_RING_STYLE,
-                T(L"Charge rings instead of percentages"));
-    AppendMenuW(m, MF_STRING | (g_leftSide ? MF_CHECKED : 0) | (g_wantWidget ? 0 : MF_GRAYED), ID_LEFT_SIDE,
-                T(L"On the left (Windows 11 with centred icons)"));
-    // With more than one monitor: choose which taskbars show the widget (all, main only, or one monitor).
+// Everything the settings window shows, read from the current settings.
+settings_window::State BuildSettingsState() {
+    settings_window::State st;
+    st.light = ReadLightApps();
+    st.widget = g_wantWidget;
+    st.showAs = { { T(L"On the taskbar"), T(L"As tray icons") }, g_wantWidget ? 0 : 1 };
+    st.style = { { T(L"Icon and percentage"), T(L"Icon above percentage"), T(L"Charge ring") },
+                 g_ringStyle ? 2 : g_stacked ? 1 : 0 };
+    st.position = { { T(L"Next to the clock"), T(L"On the left") }, g_leftSide ? 1 : 0 };
+    st.monitors.options = { T(L"All monitors"), T(L"Main monitor only") };
+    st.monitors.selected = g_widgetMonitor == L"main" ? 1 : 0;
     auto monitors = widget::OtherMonitors();
-    if (monitors.size() > 31) monitors.resize(31);
-    if (!monitors.empty()) {
-        HMENU sub = CreatePopupMenu();
-        UINT f = MF_STRING | (g_wantWidget ? 0 : MF_GRAYED);
-        AppendMenuW(sub, f, ID_MONITOR_ALL, T(L"All monitors"));
-        AppendMenuW(sub, f, ID_MONITOR_MAIN, T(L"Main monitor only"));
-        UINT checked = g_widgetMonitor == L"main" ? ID_MONITOR_MAIN : ID_MONITOR_ALL;
-        bool found = g_widgetMonitor == L"all" || g_widgetMonitor == L"main";
-        for (UINT i = 0; i < monitors.size(); i++) {
-            AppendMenuW(sub, f, ID_MONITOR_FIRST + i, TF(L"{monitor} only", { { L"monitor", monitors[i].label } }).c_str());
-            if (monitors[i].id == g_widgetMonitor) { checked = ID_MONITOR_FIRST + i; found = true; }
-        }
-        if (!found) {  // the chosen monitor is unplugged: the main taskbar shows the widget meanwhile
-            AppendMenuW(sub, MF_STRING | MF_GRAYED, ID_MONITOR_FIRST + 31, T(L"Chosen monitor (not connected, shown on main)"));
-            checked = ID_MONITOR_FIRST + 31;
-        }
-        CheckMenuRadioItem(sub, ID_MONITOR_ALL, ID_MONITOR_FIRST + 31, checked, MF_BYCOMMAND);
-        AppendMenuW(m, MF_POPUP | (g_wantWidget ? 0 : MF_GRAYED), (UINT_PTR)sub, T(L"Show the widget on"));
+    bool found = g_widgetMonitor == L"all" || g_widgetMonitor == L"main";
+    for (auto& mo : monitors) {
+        if (mo.id == g_widgetMonitor) { st.monitors.selected = (int)st.monitors.options.size(); found = true; }
+        st.monitors.options.push_back(TF(L"{monitor} only", { { L"monitor", mo.label } }));
     }
-    AppendMenuW(m, MF_STRING | (g_brandColors ? MF_CHECKED : 0), ID_BRAND_COLORS, T(L"Brand colors (Razer green, Logitech blue, ...)"));
-    AppendMenuW(m, MF_STRING | (g_flyoutMica ? MF_CHECKED : 0), ID_FLYOUT_MICA, T(L"Mica background for the click panel"));
-    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    // Language: automatic, every built-in or user-added language (in its own name), and a way to add one.
+    if (!found) {
+        st.monitors.selected = (int)st.monitors.options.size();
+        st.monitors.options.push_back(T(L"Chosen monitor (not connected, shown on main)"));
+    }
+    st.background = g_widgetBackground;
+    st.brandColors = g_brandColors;
+    st.dimSleeping = g_dimSleeping;
+    st.hideAsleep = g_hideLastKnown;
+    st.showDisconnected = g_showDisconnectedDevices;
+
+    auto shown = OrderedEntries(true);
+    for (TrayEntry* e : OrderedEntries(false)) {
+        settings_window::Device d;
+        d.key = e->st.key;
+        d.name = DisplayName(*e);
+        d.kind = e->st.kind;
+        d.bluetooth = e->st.via == L"Bluetooth";
+        d.percent = !e->st.connected ? -1 : (e->st.percent >= 0 ? e->st.percent : e->lastPct);
+        d.charging = e->st.connected && e->st.charging;
+        d.detail = DeviceState(*e);
+        d.shown = !IsHidden(e->st.key);
+        d.renamed = g_aliases.count(e->st.key) != 0;
+        auto pos = std::find(shown.begin(), shown.end(), e);
+        d.first = pos == shown.end() || pos == shown.begin();
+        d.last = pos == shown.end() || pos + 1 == shown.end();
+        d.alert.options = { T(L"Default (15%)"), T(L"Off") };
+        for (int i = 0; i < alerts::kThresholdCount; i++) d.alert.options.push_back(std::to_wstring(alerts::kThresholds[i]) + L"%");
+        int threshold = alerts::OverrideFor(g_alertOverrides, e->st.key);
+        d.alert.selected = threshold == alerts::kUseDefault ? 0 : threshold == alerts::kDisabled ? 1 : 0;
+        for (int i = 0; i < alerts::kThresholdCount; i++)
+            if (alerts::kThresholds[i] == threshold) d.alert.selected = i + 2;
+        st.devices.push_back(d);
+    }
+
+    st.autostart = AutostartEnabled();
+    st.recordHistory = g_recordHistory;
+    for (UINT i = 0; i < ARRAYSIZE(POLL_SECONDS); i++) {
+        DWORD sec = POLL_SECONDS[i];
+        st.poll.options.push_back(sec < 60 ? TF(L"{seconds} s", { { L"seconds", std::to_wstring(sec) } })
+                                           : TF(L"{minutes} min", { { L"minutes", std::to_wstring(sec / 60) } }));
+        if (sec * 1000 == g_pollIntervalMs) st.poll.selected = (int)i;
+    }
     i18n::Init();  // picks up language files added since the last time
-    auto languages = i18n::Available();
-    if (languages.size() > 64) languages.resize(64);
-    {
-        HMENU sub = CreatePopupMenu();
-        AppendMenuW(sub, MF_STRING, ID_LANG_AUTO, T(L"Automatic (Windows language)"));
-        AppendMenuW(sub, MF_SEPARATOR, 0, nullptr);
-        UINT checked = ID_LANG_AUTO;
-        for (UINT i = 0; i < languages.size(); i++) {
-            AppendMenuW(sub, MF_STRING, ID_LANG_FIRST + i, languages[i].name.c_str());
-            if (!i18n::Choice().empty() && _wcsicmp(languages[i].code.c_str(), i18n::Choice().c_str()) == 0) checked = ID_LANG_FIRST + i;
+    st.language.options = { T(L"Automatic (Windows language)") };
+    for (auto& l : i18n::Available()) {
+        if (!i18n::Choice().empty() && _wcsicmp(l.code.c_str(), i18n::Choice().c_str()) == 0)
+            st.language.selected = (int)st.language.options.size();
+        st.language.options.push_back(l.name);
+    }
+    st.panel = { { L"Mica", L"Acrylic", T(L"Clear glass") }, g_flyoutBackdrop };
+    st.version = appversion::wide;
+    return st;
+}
+
+void OnSettingsAction(settings_window::Action a, int v, const std::wstring& key) {
+    using A = settings_window::Action;
+    switch (a) {
+        case A::ShowAs: SetMode(v == 0); break;
+        case A::Style: SetRingStyle(v == 2); SetStacked(v == 1); break;
+        case A::Position: SetLeftSide(v == 1); break;
+        case A::Monitor: {
+            auto monitors = widget::OtherMonitors();
+            if (v == 0) SetWidgetMonitor(L"all");
+            else if (v == 1) SetWidgetMonitor(L"main");
+            else if (v - 2 < (int)monitors.size()) SetWidgetMonitor(monitors[v - 2].id);
+            break;
         }
-        CheckMenuRadioItem(sub, ID_LANG_AUTO, ID_LANG_FIRST + 63, checked, MF_BYCOMMAND);
-        AppendMenuW(sub, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(sub, MF_STRING, ID_LANG_ADD, T(L"Add your own language..."));
-        AppendMenuW(m, MF_POPUP, (UINT_PTR)sub, T(L"Language"));
-    }
-    {
-        HMENU sub = CreatePopupMenu();
-        const UINT count = ARRAYSIZE(POLL_SECONDS);
-        UINT checked = 0;
-        for (UINT i = 0; i < count; i++) {
-            DWORD s = POLL_SECONDS[i];
-            std::wstring label = s < 60 ? TF(L"{seconds} s", { { L"seconds", std::to_wstring(s) } })
-                                        : TF(L"{minutes} min", { { L"minutes", std::to_wstring(s / 60) } });
-            AppendMenuW(sub, MF_STRING, ID_POLL_FIRST + i, label.c_str());
-            if (s * 1000 == g_pollIntervalMs) checked = ID_POLL_FIRST + i;
+        case A::Background: SetWidgetBackground(v != 0); break;
+        case A::BrandColors: SetBrandColors(v != 0); break;
+        case A::DimSleeping: SetDimSleeping(v != 0); break;
+        case A::HideAsleep: SetHideLastKnown(v != 0); break;
+        case A::ShowDisconnected: SetShowDisconnectedDevices(v != 0); break;
+        case A::Autostart: SetAutostart(v != 0); break;
+        case A::RecordHistory: g_recordHistory = v != 0; SaveRecordHistory(g_recordHistory); break;
+        case A::Poll: if (v >= 0 && v < (int)ARRAYSIZE(POLL_SECONDS)) SetPollSeconds(POLL_SECONDS[v]); break;
+        case A::Language: {
+            auto languages = i18n::Available();
+            if (v == 0) SetLanguage(L"");
+            else if (v - 1 < (int)languages.size()) SetLanguage(languages[v - 1].code);
+            break;
         }
-        if (checked) CheckMenuRadioItem(sub, ID_POLL_FIRST, ID_POLL_FIRST + count - 1, checked, MF_BYCOMMAND);
-        AppendMenuW(m, MF_POPUP, (UINT_PTR)sub, T(L"Check battery every"));
+        case A::AddLanguage: i18n::OpenUserFolder(); break;
+        case A::Panel:
+            g_flyoutBackdrop = std::clamp(v, 0, 2);
+            RegSetKeyValueW(HKEY_CURRENT_USER, kSettingsKey, L"FlyoutBackdrop", REG_DWORD, &g_flyoutBackdrop, sizeof(DWORD));
+            break;
+        case A::Refresh: G435RequestRead(); SetEvent(g_refreshEvt); break;
+        case A::Exit: settings_window::Close(); DestroyWindow(g_hwnd); return;
+        case A::OpenProject:
+            ShellExecuteW(nullptr, L"open", L"https://github.com/wachi35676/open-battery", nullptr, nullptr, SW_SHOWNORMAL);
+            break;
+        case A::DeviceShown: ToggleHidden(key); break;
+        case A::DeviceLeft: MoveEntry(key, -1); break;
+        case A::DeviceRight: MoveEntry(key, +1); break;
+        case A::DeviceRename: RenameDevice(key); break;
+        case A::DeviceResetName: ResetDeviceName(key); break;
+        case A::DeviceAlert:
+            if (v == 0) SetAlertOverride(key, alerts::kUseDefault);
+            else if (v == 1) SetAlertOverride(key, alerts::kDisabled);
+            else if (v - 2 < alerts::kThresholdCount) SetAlertOverride(key, alerts::kThresholds[v - 2]);
+            break;
+        case A::DeviceHistory: {
+            auto it = g_entries.find(key);
+            if (it != g_entries.end()) battery_history::Show(g_hwnd, key, DisplayName(it->second));
+            break;
+        }
     }
-    AppendMenuW(m, MF_STRING, ID_REFRESH, T(L"Refresh now"));
-    AppendMenuW(m, MF_STRING | (AutostartEnabled() ? MF_CHECKED : 0), ID_AUTOSTART, T(L"Start with Windows"));
-    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING, ID_EXIT, T(L"Exit"));
-    POINT pt;
-    GetCursorPos(&pt);
-    SetForegroundWindow(g_hwnd);
-    UINT cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON | (i18n::Rtl() ? TPM_LAYOUTRTL : 0), pt.x, pt.y, 0,
-                              g_hwnd, nullptr);
-    PostMessageW(g_hwnd, WM_NULL, 0, 0);
-    DestroyMenu(m);
-    switch (cmd) {
-        case ID_REFRESH: G435RequestRead(); SetEvent(g_refreshEvt); break;
-        case ID_AUTOSTART: SetAutostart(!AutostartEnabled()); break;
-        case ID_HIDE_LAST_KNOWN: SetHideLastKnown(!g_hideLastKnown); break;
-        case ID_SHOW_DISCONNECTED: SetShowDisconnectedDevices(!g_showDisconnectedDevices); break;
-        case ID_DIM_SLEEPING: SetDimSleeping(!g_dimSleeping); break;
-        case ID_RECORD_HISTORY: g_recordHistory = !g_recordHistory; SaveRecordHistory(g_recordHistory); break;
-        case ID_WIDGET_BACKGROUND: SetWidgetBackground(!g_widgetBackground); break;
-        case ID_MONITOR_ALL: SetWidgetMonitor(L"all"); break;
-        case ID_LANG_AUTO: SetLanguage(L""); break;
-        case ID_LANG_ADD: i18n::OpenUserFolder(); break;
-        case ID_MONITOR_MAIN: SetWidgetMonitor(L"main"); break;
-        case ID_BRAND_COLORS: SetBrandColors(!g_brandColors); break;
-        case ID_STACKED: SetStacked(!g_stacked); break;
-        case ID_RING_STYLE: SetRingStyle(!g_ringStyle); break;
-        case ID_FLYOUT_MICA: SetFlyoutMica(!g_flyoutMica); break;
-        case ID_LEFT_SIDE: SetLeftSide(!g_leftSide); break;
-        case ID_MODE_WIDGET: SetMode(true); break;
-        case ID_MODE_TRAY: SetMode(false); break;
-        case ID_EXIT: DestroyWindow(g_hwnd); break;
-        default:
-            if (cmd >= ID_POLL_FIRST && cmd < ID_POLL_FIRST + ARRAYSIZE(POLL_SECONDS)) {
-                SetPollSeconds(POLL_SECONDS[cmd - ID_POLL_FIRST]);
-            } else if (cmd >= ID_LANG_FIRST && cmd < ID_LANG_FIRST + languages.size()) {
-                SetLanguage(languages[cmd - ID_LANG_FIRST].code);
-            } else if (cmd >= ID_MONITOR_FIRST && cmd < ID_MONITOR_FIRST + monitors.size()) {
-                SetWidgetMonitor(monitors[cmd - ID_MONITOR_FIRST].id);
-            } else if (cmd >= ID_DEVICE_FIRST && cmd < ID_DEVICE_FIRST + keys.size() * DEV_STRIDE) {
-                std::wstring key = keys[(cmd - ID_DEVICE_FIRST) / DEV_STRIDE];
-                switch ((cmd - ID_DEVICE_FIRST) % DEV_STRIDE) {
-                    case DEV_TOGGLE: ToggleHidden(key); break;
-                    case DEV_LEFT:   MoveEntry(key, -1); break;
-                    case DEV_RIGHT:  MoveEntry(key, +1); break;
-                    case DEV_RENAME: RenameDevice(key); break;
-                    case DEV_RESET_NAME: ResetDeviceName(key); break;
-                    case DEV_ALERT_DEFAULT: SetAlertOverride(key, alerts::kUseDefault); break;
-                    case DEV_ALERT_OFF: SetAlertOverride(key, alerts::kDisabled); break;
-                    case DEV_HISTORY: {
-                        auto it = g_entries.find(key);
-                        if (it != g_entries.end())
-                            battery_history::Show(g_hwnd, key, DisplayName(it->second));
-                        break;
-                    }
-                    default: {
-                        UINT slot = (cmd - ID_DEVICE_FIRST) % DEV_STRIDE;
-                        if (slot >= DEV_ALERT_FIRST && slot < DEV_ALERT_FIRST + alerts::kThresholdCount)
-                            SetAlertOverride(key, alerts::kThresholds[slot - DEV_ALERT_FIRST]);
-                        break;
-                    }
-                }
-            }
-    }
+    RefreshFlyout();
+}
+
+void OpenSettings(settings_window::Page page) {
+    flyout::Hide();
+    settings_window::Show(g_inst, page, BuildSettingsState, OnSettingsAction);
 }
 
 // ---- worker thread ----------------------------------------------------------------------------
@@ -1203,13 +1164,13 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_TRAY:
             switch (LOWORD(lp)) {
-                case WM_CONTEXTMENU: ShowMenu(); break;
+                case WM_CONTEXTMENU: OpenSettings(); break;
                 case NIN_SELECT:
                 case NIN_KEYSELECT: ShowFlyout(nullptr); break;
             }
             return 0;
         case WM_WIDGET_CLICK:  // wp: 1 for the right button; lp: the strip that was clicked
-            if (wp) { flyout::Hide(); ShowMenu(); }
+            if (wp) OpenSettings();
             else ShowFlyout(reinterpret_cast<HWND>(lp));
             return 0;
         case WM_ENDSESSION:  // sign-out / shutdown / installer restart manager
@@ -1233,6 +1194,8 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if (lp && !lstrcmpW((LPCWSTR)lp, L"ImmersiveColorSet")) {
                 bool light = ReadLightTaskbar();
                 if (light != g_lightTaskbar) { g_lightTaskbar = light; ApplyMenuTheme(light); RedrawAll(); widget::SetLightTheme(light); }
+                RefreshFlyout();               // both follow the theme live
+                settings_window::Refresh();
             }
             return 0;
         case WM_DESTROY:
@@ -1394,7 +1357,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     g_pollIntervalMs = LoadPollSeconds() * 1000;
     widget::SetStacked(g_stacked);
     g_ringStyle = LoadRingStyle();
-    g_flyoutMica = LoadBoolSetting(L"FlyoutMica", true);
+    {
+        DWORD v = 0, size = sizeof(v);
+        if (RegGetValueW(HKEY_CURRENT_USER, kSettingsKey, L"FlyoutBackdrop", RRF_RT_REG_DWORD, nullptr, &v, &size) == ERROR_SUCCESS)
+            g_flyoutBackdrop = (int)std::min<DWORD>(v, 2);
+        else if (!LoadBoolSetting(L"FlyoutMica", true))
+            g_flyoutBackdrop = 1;  // the earlier "Mica background" option was off
+    }
     widget::SetRingStyle(g_ringStyle);
     g_leftSide = LoadLeftSide();
     widget::SetLeftSide(g_leftSide);

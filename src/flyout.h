@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include "devices.h"
+#include "fluent.h"
 
 namespace flyout {
 struct Device {
@@ -32,7 +33,7 @@ struct Model {
     std::vector<Toggle> toggles;  // three per row
     Labels text;
     bool light = false;           // follows the taskbar theme
-    bool mica = true;             // Mica, or Acrylic
+    fluent::Backdrop backdrop = fluent::Backdrop::Mica;
 };
 enum class Command { Refresh, Settings, History, Toggle };
 // `id` is the toggle's id (Command::Toggle); `key` the clicked device (Command::History).

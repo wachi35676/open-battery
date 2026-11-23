@@ -376,17 +376,7 @@ void ApplyWindowPos() {
 // (30,32,36 here, as in Settings) unless the backdrop attributes are applied with frame changes that
 // may activate the window: once before it is shown and once more after it is up. Either one alone
 // leaves it grey (found by trying each combination).
-void ApplyBackdrop() {
-    BOOL dark = g_model.light ? FALSE : TRUE;
-    DwmSetWindowAttribute(g_wnd, kDwmDarkMode, &dark, sizeof(dark));
-    int corners = kCornersRound;
-    DwmSetWindowAttribute(g_wnd, kDwmCorners, &corners, sizeof(corners));
-    MARGINS m{ -1, -1, -1, -1 };
-    DwmExtendFrameIntoClientArea(g_wnd, &m);
-    int backdrop = g_model.mica ? kBackdropMica : kBackdropAcrylic;
-    DwmSetWindowAttribute(g_wnd, kDwmBackdrop, &backdrop, sizeof(backdrop));
-    SetWindowPos(g_wnd, nullptr, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
-}
+void ApplyBackdrop() { fluent::ApplyBackdrop(g_wnd, g_model.light, g_model.backdrop); }
 
 // Size and place the window next to the anchor, inside the work area of the anchor's monitor.
 void Place() {
@@ -582,7 +572,7 @@ bool Show(HINSTANCE inst, const RECT& anchor, const Model& model, Handler handle
 void Update(const Model& model) {
     if (!Visible()) return;
     bool resize = model.devices.size() != g_model.devices.size() || model.toggles.size() != g_model.toggles.size();
-    bool theme = model.light != g_model.light || model.mica != g_model.mica;
+    bool theme = model.light != g_model.light || model.backdrop != g_model.backdrop;
     g_model = model;
     if (theme) ApplyBackdrop();
     if (resize) Place();

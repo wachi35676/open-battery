@@ -18,5 +18,5 @@ rc /nologo /i res /i build-msvc /fo build-msvc\app.res res\app.rc || exit /b 1
 cl /nologo /std:c++17 /utf-8 /EHsc /O1 /MT /W3 /DUNICODE /D_UNICODE /D_WIN32_WINNT=0x0A00 /DWINVER=0x0A00 /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS /FI"%~dp0msvc_compat.h" ^
    /Fobuild-msvc\ src\*.cpp src\drivers\*.cpp build-msvc\app.res ^
    /Fe:WirelessBattery.exe /link /SUBSYSTEM:WINDOWS ^
-   hid.lib setupapi.lib cfgmgr32.lib ole32.lib oleaut32.lib comctl32.lib gdi32.lib runtimeobject.lib user32.lib shell32.lib advapi32.lib ws2_32.lib bluetoothapis.lib || exit /b 1
+   hid.lib setupapi.lib cfgmgr32.lib ole32.lib oleaut32.lib comctl32.lib gdi32.lib runtimeobject.lib user32.lib shell32.lib advapi32.lib ws2_32.lib bluetoothapis.lib d2d1.lib dwrite.lib dwmapi.lib || exit /b 1
 echo Built WirelessBattery.exe

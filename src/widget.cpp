@@ -961,7 +961,7 @@ LRESULT CALLBACK WidgetProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_LBUTTONUP:
         case WM_RBUTTONUP:
-            PostMessageW(g_notify, g_clickMsg, 0, 0);
+            PostMessageW(g_notify, g_clickMsg, msg == WM_RBUTTONUP, reinterpret_cast<LPARAM>(h));
             return 0;
         case WM_MOUSEACTIVATE:
             return MA_NOACTIVATE;

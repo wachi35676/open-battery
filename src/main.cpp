@@ -25,6 +25,7 @@
 #include "rename_dialog.h"
 #include "drivers/drivers.h"
 #include "widget.h"
+#include "flyout.h"
 
 namespace {
 
@@ -43,7 +44,7 @@ constexpr UINT ALERT_ICON_ID = 2;
 
 enum MenuId : UINT {
     ID_REFRESH = 100, ID_AUTOSTART, ID_HIDE_LAST_KNOWN, ID_WIDGET_BACKGROUND, ID_EXIT, ID_MODE_WIDGET, ID_MODE_TRAY,
-    ID_BRAND_COLORS, ID_STACKED, ID_SHOW_DISCONNECTED, ID_RECORD_HISTORY, ID_DIM_SLEEPING, ID_LEFT_SIDE, ID_RING_STYLE,
+    ID_BRAND_COLORS, ID_STACKED, ID_SHOW_DISCONNECTED, ID_RECORD_HISTORY, ID_DIM_SLEEPING, ID_LEFT_SIDE, ID_RING_STYLE, ID_FLYOUT_MICA,
     ID_POLL_FIRST = 500,  // "Check battery every": ID_POLL_FIRST + 0..7
     ID_LANG_AUTO = 400, ID_LANG_ADD, ID_LANG_FIRST,  // "Language": ID_LANG_FIRST + 0..63
     ID_MONITOR_ALL = 300, ID_MONITOR_MAIN, ID_MONITOR_FIRST,  // "Show the widget on": ID_MONITOR_FIRST + 0..31
@@ -75,6 +76,7 @@ std::wstring g_widgetMonitor = L"all";  // which taskbars show the widget: "all"
 bool g_widgetBackground = false;  // draw a plate behind the taskbar text (transparent taskbar themes)
 bool g_stacked = false;      // icon above the percentage (menu option)
 bool g_ringStyle = false;    // charge rings instead of percentages (menu option)
+bool g_flyoutMica = true;    // the click panel on Mica (default) or Acrylic (menu option)
 bool g_leftSide = false;     // left end of a centred Windows 11 taskbar (menu option)
 bool g_brandColors = false;  // off by default; known brands get their color (Razer green, Logitech blue, ...)
 std::atomic<DWORD> g_pollIntervalMs{ 60 * 1000 };  // set from the menu, read by the worker thread
@@ -616,6 +618,8 @@ void UpdateWidget() {
     widget::SetItems(items, tip);
 }
 
+void RefreshFlyout();
+
 void OnResults(std::vector<DeviceStatus>& results) {
     std::map<std::wstring, bool> seen;
     for (auto& s : results) {
@@ -660,6 +664,7 @@ void OnResults(std::vector<DeviceStatus>& results) {
     }
     UpdatePlaceholder();
     UpdateWidget();
+    RefreshFlyout();
 }
 
 // Makes the actual display match the chosen mode; falls back to tray icons if the taskbar
@@ -837,6 +842,117 @@ void MoveEntry(const std::wstring& key, int dir) {
     UpdateWidget();
 }
 
+// ---- the panel that opens on a left click -------------------------------------------------------
+
+std::wstring DeviceState(const TrayEntry& e) {
+    const DeviceStatus& s = e.st;
+    if (!s.connected) return T(L"Switched off");
+    if (s.full || (s.charging && s.percent >= 100)) return T(L"Fully charged");
+    if (s.charging && !s.asleep) return T(L"Charging");
+    if (s.asleep || s.percent < 0) return T(L"Asleep, last known level");
+    return T(s.via);
+}
+
+flyout::Model BuildFlyoutModel() {
+    flyout::Model m;
+    m.light = g_lightTaskbar;
+    m.mica = g_flyoutMica;
+    int charging = 0;
+    std::wstring lowName;
+    for (TrayEntry* e : OrderedEntries(true)) {
+        flyout::Device d;
+        d.key = e->st.key;
+        d.name = DisplayName(*e);
+        d.via = T(e->st.via);
+        d.kind = e->st.kind;
+        d.bluetooth = e->st.via == L"Bluetooth";
+        bool offline = !e->st.connected;
+        d.percent = offline ? -1 : (e->st.percent >= 0 ? e->st.percent : e->lastPct);
+        if (!offline && e->st.percent >= 0) d.levelText = T(e->st.levelText);
+        d.charging = !offline && !e->st.asleep && e->st.charging;
+        d.full = !offline && (e->st.full || (e->st.charging && d.percent >= 100));
+        d.dim = ShouldDim(e->st) || offline;
+        d.low = !offline && !d.charging && d.percent >= 0 && d.percent <= LOW_BATTERY;
+        d.state = DeviceState(*e);
+        if (d.charging && !d.full) charging++;
+        if (d.low && lowName.empty()) lowName = d.name;
+        m.devices.push_back(d);
+    }
+    SYSTEMTIME now;
+    GetLocalTime(&now);
+    m.text.greeting = now.wHour < 5 ? T(L"Good evening") : now.wHour < 12 ? T(L"Good morning")
+                    : now.wHour < 18 ? T(L"Good afternoon") : T(L"Good evening");
+    if (m.devices.empty()) m.text.summary = T(L"No devices yet");
+    else if (!lowName.empty()) m.text.summary = TF(L"{name} is low", { { L"name", lowName } });
+    else if (charging == 1) m.text.summary = T(L"1 device charging");
+    else if (charging > 1) m.text.summary = TF(L"{count} devices charging", { { L"count", std::to_wstring(charging) } });
+    else m.text.summary = T(L"All devices are fine");
+    m.text.settings = T(L"All settings");
+    m.text.refresh = T(L"Refresh now");
+    m.text.history = T(L"History");
+    m.text.exit = T(L"Exit");
+    m.text.on = T(L"On");
+    m.text.off = T(L"Off");
+    m.text.emptyTitle = T(L"Looking for devices");
+    m.text.emptyBody = T(L"Turn a device on or plug in its receiver.");
+    if (m.devices.size() > 7)
+        m.text.more = TF(L"{count} more in All settings", { { L"count", std::to_wstring(m.devices.size() - 7) } });
+    if (g_wantWidget) {
+        m.toggles.push_back({ ID_RING_STYLE, T(L"Charge rings"), 0xEA3A, g_ringStyle });
+        m.toggles.push_back({ ID_LEFT_SIDE, T(L"On the left"), 0xE8E4, g_leftSide });
+    }
+    m.toggles.push_back({ ID_BRAND_COLORS, T(L"Brand colors"), 0xE790, g_brandColors });
+    m.toggles.push_back({ ID_AUTOSTART, T(L"Start with Windows"), 0xE768, AutostartEnabled() });
+    return m;
+}
+
+void ShowMenu();
+
+void OnFlyoutCommand(flyout::Command cmd, UINT id, const std::wstring& key) {
+    switch (cmd) {
+        case flyout::Command::Refresh: G435RequestRead(); SetEvent(g_refreshEvt); break;
+        case flyout::Command::Exit: DestroyWindow(g_hwnd); break;
+        case flyout::Command::Settings: ShowMenu(); break;
+        case flyout::Command::History: {
+            auto it = g_entries.find(key);
+            if (it != g_entries.end()) battery_history::Show(g_hwnd, key, DisplayName(it->second));
+            break;
+        }
+        case flyout::Command::Toggle:
+            switch (id) {
+                case ID_RING_STYLE: SetRingStyle(!g_ringStyle); break;
+                case ID_LEFT_SIDE: SetLeftSide(!g_leftSide); break;
+                case ID_BRAND_COLORS: SetBrandColors(!g_brandColors); break;
+                case ID_AUTOSTART: SetAutostart(!AutostartEnabled()); break;
+            }
+            RefreshFlyout();
+            break;
+    }
+}
+
+void RefreshFlyout() {
+    if (flyout::Visible()) flyout::Update(BuildFlyoutModel());
+}
+
+// Opens the panel by `anchor` (the clicked strip; null: the cursor, for tray icons). Falls back to the
+// menu where the panel is not available (Windows 10, Windows 11 before 22H2).
+void ShowFlyout(HWND anchor) {
+    if (flyout::Visible()) { flyout::Hide(); return; }
+    if (flyout::JustClosed()) return;  // this click is what closed it
+    RECT r;
+    if (!anchor || !GetWindowRect(anchor, &r)) {
+        POINT pt;
+        GetCursorPos(&pt);
+        r = { pt.x, pt.y, pt.x + 1, pt.y + 1 };
+    }
+    if (!flyout::Show(g_inst, r, BuildFlyoutModel(), OnFlyoutCommand)) ShowMenu();
+}
+
+void SetFlyoutMica(bool on) {
+    g_flyoutMica = on;
+    SaveBoolSetting(L"FlyoutMica", on);
+}
+
 void ShowMenu() {
     ApplyMenuTheme(g_lightTaskbar);
     HMENU m = CreatePopupMenu();
@@ -916,6 +1032,7 @@ void ShowMenu() {
         AppendMenuW(m, MF_POPUP | (g_wantWidget ? 0 : MF_GRAYED), (UINT_PTR)sub, T(L"Show the widget on"));
     }
     AppendMenuW(m, MF_STRING | (g_brandColors ? MF_CHECKED : 0), ID_BRAND_COLORS, T(L"Brand colors (Razer green, Logitech blue, ...)"));
+    AppendMenuW(m, MF_STRING | (g_flyoutMica ? MF_CHECKED : 0), ID_FLYOUT_MICA, T(L"Mica background for the click panel"));
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     // Language: automatic, every built-in or user-added language (in its own name), and a way to add one.
     i18n::Init();  // picks up language files added since the last time
@@ -975,6 +1092,7 @@ void ShowMenu() {
         case ID_BRAND_COLORS: SetBrandColors(!g_brandColors); break;
         case ID_STACKED: SetStacked(!g_stacked); break;
         case ID_RING_STYLE: SetRingStyle(!g_ringStyle); break;
+        case ID_FLYOUT_MICA: SetFlyoutMica(!g_flyoutMica); break;
         case ID_LEFT_SIDE: SetLeftSide(!g_leftSide); break;
         case ID_MODE_WIDGET: SetMode(true); break;
         case ID_MODE_TRAY: SetMode(false); break;
@@ -1092,13 +1210,14 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_TRAY:
             switch (LOWORD(lp)) {
-                case WM_CONTEXTMENU:
+                case WM_CONTEXTMENU: ShowMenu(); break;
                 case NIN_SELECT:
-                case NIN_KEYSELECT: ShowMenu(); break;
+                case NIN_KEYSELECT: ShowFlyout(nullptr); break;
             }
             return 0;
-        case WM_WIDGET_CLICK:
-            ShowMenu();
+        case WM_WIDGET_CLICK:  // wp: 1 for the right button; lp: the strip that was clicked
+            if (wp) { flyout::Hide(); ShowMenu(); }
+            else ShowFlyout(reinterpret_cast<HWND>(lp));
             return 0;
         case WM_ENDSESSION:  // sign-out / shutdown / installer restart manager
             if (wp) DestroyWindow(h);
@@ -1282,6 +1401,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     g_pollIntervalMs = LoadPollSeconds() * 1000;
     widget::SetStacked(g_stacked);
     g_ringStyle = LoadRingStyle();
+    g_flyoutMica = LoadBoolSetting(L"FlyoutMica", true);
     widget::SetRingStyle(g_ringStyle);
     g_leftSide = LoadLeftSide();
     widget::SetLeftSide(g_leftSide);

@@ -37,7 +37,8 @@
 //    are tried last to first. From github.com/OmarK6/Incott-Manager (device.go),
 //    github.com/HeHaoren/incott-mouse-app (docs/protocol.md) and github.com/FelixNg21/MouseBattery
 //    (battery byte layout, verified on a G23 V2 with the 522C dongle).
-//  * Delux M800 Pro (VID 248A, receiver 5B2F, cable 5B2E): 33-byte feature report 0x0C on usage page
+//  * Delux M800 Pro and the original Ninjutso Sora, an M800 Pro based model told apart by the receiver's
+//    HID product string (VID 248A, receiver 5B2F, cable 5B2E): 33-byte feature report 0x0C on usage page
 //    FF00 / usage 01. A SET_FEATURE status query [0C][01][20][00][seq...] is answered via
 //    GET_FEATURE 0x0C: bytes [8..11] ASCII model ("M802"), [15] sensor, [18] percent, [19] state
 //    (0 = discharging, 1 = charging, 2 = full). The dongle requires incrementing sequence numbers in byte 4.
@@ -63,6 +64,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cwctype>
 #include <map>
 #include <memory>
 #include <set>
@@ -515,6 +517,11 @@ void PollDeluxM800(PollContext& ctx) {
             DeviceStatus s;
             s.key = L"delux:m800";
             s.name = L"Delux M800 Pro";
+            // The original Ninjutso Sora uses the same receiver and protocol; its receiver names itself in the
+            // HID product string ("Ninjutso Sora"), so show that name instead of the Delux one.
+            std::wstring product = HidProduct(*c);
+            for (auto& ch : product) ch = (wchar_t)towlower(ch);
+            if (product.find(L"sora") != std::wstring::npos) s.name = L"Ninjutso Sora";
             s.kind = DeviceKind::Mouse;
             s.via = receiver ? L"2.4 GHz receiver" : L"USB cable";
             s.connected = (r[6] != 0 || pct > 0);

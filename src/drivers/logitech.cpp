@@ -92,18 +92,24 @@ int LiIonPercent(int mv) {
     return Interpolate(mv, v, p, 13);
 }
 
-// Voltage -> % for G headsets (calibration from HeadsetControl).
+// Voltage -> % for G headsets (HeadsetControl and G HUB power models).
 int HeadsetPercent(USHORT pid, int mv) {
     static const int g533v[] = { 4200, 3850, 3790, 3750, 3680, 3330 }, g533p[] = { 100, 50, 30, 20, 5, 0 };
     static const int g535v[] = { 4175, 3817, 3766, 3730, 3664, 3310 }, g535p[] = { 100, 50, 30, 20, 5, 0 };
     static const int g633v[] = { 4100, 3950, 3850, 3750, 3650, 3500, 3300, 3150 }, g633p[] = { 100, 80, 60, 40, 20, 10, 5, 0 };
+    // G733 046D:0AB5: sample G HUB's g733_0ab5/battery_0ab5.xml discharge curve
+    // at 5% intervals of remaining energy (the model records discharged mWh).
+    static const int g733v[] = { 4175, 4127, 4086, 4054, 4001, 3968, 3944, 3914, 3875, 3840, 3818,
+                                 3800, 3783, 3771, 3759, 3744, 3725, 3695, 3675, 3630, 3341 };
+    static const int g733p[] = { 100, 95, 90, 85, 80, 75, 70, 65, 60, 55, 50, 45, 40, 35, 30, 25, 20, 15, 10, 5, 0 };
     static const int gprov[] = { 4150, 3830, 3780, 3740, 3670, 3320 }, gprop[] = { 100, 50, 30, 20, 5, 0 };
     static const int proxv[] = { 4102, 4046, 3993, 3950, 3915, 3877, 3838, 3809, 3789, 3772, 3758, 3747, 3736, 3722, 3707, 3687, 3661, 3644, 3548, 3426, 3293 }, proxp[] = { 100, 95, 90, 85, 80, 75, 70, 65, 60, 55, 50, 45, 40, 35, 30, 25, 20, 15, 10, 5, 0 };
     static const int defv[] = { 4100, 3850, 3780, 3730, 3650, 3300 }, defp[] = { 100, 50, 30, 20, 5, 0 };
     switch (pid) {
         case 0x0A66: return Interpolate(mv, g533v, g533p, 6);
         case 0x0AC4: return Interpolate(mv, g535v, g535p, 6);
-        case 0x0A5C: case 0x0A89: case 0x0A5B: case 0x0A87: case 0x0AB5: case 0x0AFE: return Interpolate(mv, g633v, g633p, 8);
+        case 0x0A5C: case 0x0A89: case 0x0A5B: case 0x0A87: case 0x0AFE: return Interpolate(mv, g633v, g633p, 8);
+        case 0x0AB5: return Interpolate(mv, g733v, g733p, 21);
         case 0x0AAA: case 0x0ABA: return Interpolate(mv, proxv, proxp, 21);
         case 0x0AA7: case 0x0AFB: return Interpolate(mv, gprov, gprop, 6);
         default: return Interpolate(mv, defv, defp, 6);

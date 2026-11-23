@@ -33,7 +33,8 @@ bool IsReceiver(USHORT vid, USHORT pid) {
     return std::find(std::begin(kReceivers), std::end(kReceivers), key) != std::end(kReceivers);
 }
 
-// Product string without link words: "AJAZZ 2.4G 8K" -> "AJAZZ", "2.4G Wireless Receiver" -> "".
+// Product string without link or device-type words: "AJAZZ 2.4G 8K" -> "AJAZZ", "2.4G Wireless Receiver" -> "",
+// "Akko 2.4G Wireless Keyboard" -> "Akko" (the caller appends " wireless keyboard" / " wireless mouse").
 std::wstring Brand(const std::wstring& product) {
     std::wistringstream in(product);
     std::wstring word, out;
@@ -41,7 +42,7 @@ std::wstring Brand(const std::wstring& product) {
         std::wstring u = word;
         for (auto& ch : u) ch = (wchar_t)std::towupper(ch);
         if (u == L"2.4G" || u == L"2.4GHZ" || u == L"8K" || u == L"4K" || u == L"2K" || u == L"1K" || u == L"RECEIVER" ||
-            u == L"WIRELESS" || u == L"DONGLE" || u == L"USB")
+            u == L"WIRELESS" || u == L"DONGLE" || u == L"USB" || u == L"KEYBOARD" || u == L"MOUSE")
             continue;
         out += (out.empty() ? L"" : L" ") + word;
     }
@@ -98,8 +99,10 @@ void PollRongyuan(PollContext& ctx) {
                 s.kind = keyboard ? DeviceKind::Keyboard : DeviceKind::Mouse;
                 s.via = L"2.4 GHz receiver";
 
-                // Retain the last battery reading while this keyboard is sleeping.
-                if (vid == 0x3151 && pid == 0x5038 && keyboard) {
+                // Retain the last battery reading while this keyboard is sleeping: the receiver then sets the
+                // keyboard offline flag ([4]), so without a grace period the keyboard vanished a few minutes
+                // after the last key press. Hardware-tested: MonsGeek 3151:5038, Akko 5075B Plus V2 3151:4011.
+                if (vid == 0x3151 && (pid == 0x5038 || pid == 0x4011) && keyboard) {
                     s.graceSec = 1800;
                 }
 

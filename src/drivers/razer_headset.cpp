@@ -33,6 +33,7 @@
 // cmd 21 = battery 0-100, cmd 2A = cable (00 / 01).
 // Protocol from github.com/mehdibouchami/razer-barracuda-x-battery (YS-Tech framing) and
 // github.com/nightdevx/barracuda-x-battery (checked on a 1532:0550 receiver).
+// 1532:054E uses the same collection and protocol, verified on real hardware.
 //
 // The later receiver revision 1532:0552 ("Barracuda X 2.4", vendor collection FF00:0000) has a Macronix bridge
 // with report id 01 and no CRC or 'O' / 'F' acknowledgement. It is put in app mode first: [01 40] -> [01 40 01 01].
@@ -395,7 +396,7 @@ private:
 };
 
 void PollBarracudaX(PollContext& ctx) {
-    for (USHORT pid : { (USHORT)0x0550, (USHORT)0x0552 }) {
+    for (USHORT pid : { (USHORT)0x054E, (USHORT)0x0550, (USHORT)0x0552 }) {
         if (ctx.IsClaimed(0x1532, pid)) continue;
         const bool macronix = pid == 0x0552;
         const USHORT usage = macronix ? 0x0000 : 0x0001;

@@ -42,6 +42,8 @@ int main() {
         {0x0C45, 0xFEFE},
         {0x0C45, 0xFDFD},
         {0x342D, 0xE479},
+        {0x342D, 0xE411}, // RSQ_20055_2.4G (issue #3808, interface 1)
+        {0x342D, 0xE489}, // EPOMAKER Galaxy100 (#3802): FF60/0061 on interface 2
         {0x342D, 0xE485},
         {0x342D, 0xE4BC},
         {0x342D, 0xE4C2},
@@ -58,12 +60,34 @@ int main() {
         {0x362D, 0xD030},
         {0x362D, 0xD101},
         {0x342D, 0xE49F}}) {
-        auto ctx = Poll(Collection(id.first, id.second, (id.first == 0x05AC || id.first == 0x0C45) ? 3 : 1), {{0x20, 1, 0, 73}});
+        int iface = (id.first == 0x05AC || id.first == 0x0C45) ? 3 :
+                    (id.first == 0x342D && id.second == 0xE489) ? 2 : 1;
+        auto ctx = Poll(Collection(id.first, id.second, iface), {{0x20, 1, 0, 73}});
         assert(ctx.out.size() == 1 && ctx.out[0].percent == 73);
         assert(ctx.out[0].key == L"sonix:" + Hex4(id.first) + L":" + Hex4(id.second));
         assert(ctx.out[0].name == L"Keyboard" && ctx.out[0].graceSec == 1800);
         PollSonix(ctx); assert(opens == 1 && writes == 1);
     }
+    // RSQ_20055_2.4G reports SONiX FF60:0061 on MI_01 only.
+    for (int iface : {0, 2, 3, 4}) {
+        auto ctx = Poll(Collection(0x342D, 0xE411, iface), {{0x20, 1, 0, 73}});
+        assert(ctx.out.empty() && opens == 0 && writes == 0);
+    }
+    auto wrongSize = Collection(0x342D, 0xE411, 1);
+    --wrongSize.caps.InputReportByteLength;
+    assert(Poll(wrongSize, {{0x20, 1, 0, 73}}).out.empty() && opens == 0);
+    wrongSize = Collection(0x342D, 0xE411, 1);
+    --wrongSize.caps.OutputReportByteLength;
+    assert(Poll(wrongSize, {{0x20, 1, 0, 73}}).out.empty() && opens == 0);
+    // Galaxy100 is matched only on its reported SONiX vendor HID interface (MI_02).
+    // In particular, do not probe its other QMK/VIA interface numbers.
+    for (int iface : {0, 1, 3}) {
+        auto ctx = Poll(Collection(0x342D, 0xE489, iface), {{0x20, 1, 0, 73}});
+        assert(ctx.out.empty() && opens == 0 && writes == 0);
+    }
+    wrongSize = Collection(0x342D, 0xE489, 2);
+    --wrongSize.caps.OutputReportByteLength;
+    assert(Poll(wrongSize, {{0x20, 1, 0, 73}}).out.empty() && opens == 0);
     for (int level : {0, 1, 73, 100, 101, 255}) {
         auto ctx = Poll(Collection(), {{0x20, 1, 0, static_cast<BYTE>(level)}});
         bool connected = level >= 1 && level <= 100;
@@ -94,5 +118,5 @@ int main() {
     assert(Poll(Collection(), {}).out.empty() && writes == 0);
     openOk = true; writeOk = false;
     assert(Poll(Collection(), {}).out.empty() && writes == 2);
-    puts("SONiX driver tests passed (20 receiver IDs)");
+    puts("SONiX driver tests passed (22 receiver IDs, RSQ and Galaxy100 interface filtering)");
 }

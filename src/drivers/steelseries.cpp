@@ -182,6 +182,9 @@ const AeroxModel kAerox[] = {
     { 0x1892, 0x1890, L"SteelSeries Aerox 3 Wireless Gen 2", true, true },
     { 0x1852, 0x1852, L"SteelSeries Aerox 5 Wireless", false, false },
     { 0x1854, 0x1852, L"SteelSeries Aerox 5 Wireless", true, false },
+    // Destiny 2 Lightfall Edition: same Aerox 5 protocol, different USB IDs.
+    { 0x185C, 0x185C, L"SteelSeries Aerox 5 Wireless Destiny 2 Lightfall Edition", false, false },
+    { 0x185E, 0x185C, L"SteelSeries Aerox 5 Wireless Destiny 2 Lightfall Edition", true, false },
     { 0x1858, 0x1858, L"SteelSeries Aerox 9 Wireless", false, false },
     { 0x185A, 0x1858, L"SteelSeries Aerox 9 Wireless", true, false },
     { 0x1840, 0x1840, L"SteelSeries Prime Wireless", false, false },

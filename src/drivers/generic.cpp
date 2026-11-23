@@ -140,9 +140,13 @@ DeviceKind KindFromCategory(const std::wstring& c) {
 //    krisgfx9/Wireless-Device-Battery-Monitor#168. Its USB ids are 3151:4011 / 4015 (OpenRGB issue 4074).
 //  * 19F5:324A NuPhy WH80 over Bluetooth, hardware-tested. Its two keyboard collections
 //    coexist with a mouse collection; USB cable mode uses 19F5:A011 instead.
+//  * 0C45:FEFE AJAZZ V83 Pro over Bluetooth (issue #3993). The BT HID link exposes a boot keyboard
+//    collection next to a 6-byte mouse collection, and the model reuses the 2.4 GHz dongle's ids, so
+//    KindFromCollections sees the mouse collection and the keyboard is drawn as a mouse.
 DeviceKind KindFromBleIds(USHORT vid, USHORT pid) {
     if (vid == 0x3151 && pid == 0x4013) return DeviceKind::Keyboard;
     if (vid == 0x19F5 && pid == 0x324A) return DeviceKind::Keyboard;
+    if (vid == 0x0C45 && pid == 0xFEFE) return DeviceKind::Keyboard;
     return DeviceKind::Other;
 }
 

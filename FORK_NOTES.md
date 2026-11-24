@@ -21,7 +21,7 @@ check mark for fully charged devices (#1383).
 | *Charge rings instead of percentages*: a ring around each device icon shows the charge; exact values stay in the tooltip | from our old Customize menu; device order and left placement already exist |
 | Click panel and settings window, replacing the right-click menu: Direct2D on the Mica (or Acrylic / Clear glass) backdrop, following light and dark mode; settings laid out like the Windows Settings app | `src/flyout.cpp`, `src/settings_window.cpp`, `src/fluent.cpp`; needs Windows 11 22H2 |
 | Desktop widget: the click panel as a draggable window on the desktop, in five fixed sizes, with glass, frosted glass or solid background (Mica needs a focused window), following light and dark mode; settings page *Desktop* | `src/flyout.cpp` (a second view of the same drawing), `src/settings_window.cpp` |
-| *Start with Windows* is a per-user Task Scheduler logon task (an unsigned program in the Run key is never started on Windows 11 build 26300), migrated from the Run value at startup | `src/main.cpp` (`InitAutostart`) |
+| *Start with Windows* is a per-user Task Scheduler logon task (ten seconds after sign-in), migrated from the Run value at startup; the Run value is the fallback | `src/main.cpp` (`InitAutostart`) |
 | Visual Studio build (`build-msvc.cmd`), and a one-line MSVC compile fix in `razer_headset.cpp` | |
 
 ## Removed here

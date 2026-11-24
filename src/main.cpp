@@ -327,23 +327,136 @@ void SavePollSeconds(DWORD seconds) {
     RegSetKeyValueW(HKEY_CURRENT_USER, kSettingsKey, L"PollIntervalSeconds", REG_DWORD, &seconds, sizeof(seconds));
 }
 
-bool AutostartEnabled() {
+// ---- start with Windows -----------------------------------------------------------------------
+// Windows 11 does not start an unsigned program from the Run key: it never reaches the Startup apps list, and
+// nothing launches it at sign-in (checked on a build that started every signed entry and skipped the unsigned
+// ones, at every boot). So "Start with Windows" is a per-user logon task in Task Scheduler, which needs no
+// administrator rights. The Run value is only a fallback if the task cannot be created; an existing Run value is
+// moved to the task when the app starts.
+
+const wchar_t* kTaskName = L"BatteryHub autostart";
+bool g_autostartTask = false;  // the logon task exists
+
+bool RunValueMatches() {
     wchar_t buf[MAX_PATH * 2];
     DWORD sz = sizeof(buf);
     if (RegGetValueW(HKEY_CURRENT_USER, kRunKey, kRunValue, RRF_RT_REG_SZ, nullptr, buf, &sz) != ERROR_SUCCESS) return false;
     return _wcsicmp(buf, (L"\"" + ExePath() + L"\"").c_str()) == 0;
 }
 
-void SetAutostart(bool on) {
+void WriteRunValue() {
     HKEY k;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_SET_VALUE, &k) != ERROR_SUCCESS) return;
-    if (on) {
-        std::wstring v = L"\"" + ExePath() + L"\"";
-        RegSetValueExW(k, kRunValue, 0, REG_SZ, (const BYTE*)v.c_str(), (DWORD)((v.size() + 1) * sizeof(wchar_t)));
-    } else {
-        RegDeleteValueW(k, kRunValue);
-    }
+    std::wstring v = L"\"" + ExePath() + L"\"";
+    RegSetValueExW(k, kRunValue, 0, REG_SZ, (const BYTE*)v.c_str(), (DWORD)((v.size() + 1) * sizeof(wchar_t)));
     RegCloseKey(k);
+}
+
+void DeleteRunValue() {
+    HKEY k;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_SET_VALUE, &k) != ERROR_SUCCESS) return;
+    RegDeleteValueW(k, kRunValue);
+    RegCloseKey(k);
+}
+
+// Runs a command line without a window and returns its exit code (-1: it could not be started or timed out).
+int RunHidden(const std::wstring& cmd) {
+    std::vector<wchar_t> line(cmd.begin(), cmd.end());
+    line.push_back(0);
+    STARTUPINFOW si{ sizeof(si) };
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, line.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) return -1;
+    DWORD code = (DWORD)-1;
+    if (WaitForSingleObject(pi.hProcess, 15000) == WAIT_OBJECT_0) GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return (int)code;
+}
+
+std::wstring Schtasks(const std::wstring& args) {
+    wchar_t sys[MAX_PATH];
+    GetSystemDirectoryW(sys, MAX_PATH);
+    return L"\"" + std::wstring(sys) + L"\\schtasks.exe\" " + args;
+}
+
+std::wstring XmlEscape(const std::wstring& s) {
+    std::wstring o;
+    for (wchar_t c : s) {
+        switch (c) {
+            case L'&': o += L"&amp;"; break;
+            case L'<': o += L"&lt;"; break;
+            case L'>': o += L"&gt;"; break;
+            case L'"': o += L"&quot;"; break;
+            default: o += c;
+        }
+    }
+    return o;
+}
+
+bool QueryAutostartTask() { return RunHidden(Schtasks(L"/query /tn \"" + std::wstring(kTaskName) + L"\"")) == 0; }
+
+void DeleteAutostartTask() { RunHidden(Schtasks(L"/delete /tn \"" + std::wstring(kTaskName) + L"\" /f")); }
+
+// Starts this exe ten seconds after the current user signs in (the shell is up by then), whatever the power
+// source, with no time limit, and never a second copy.
+bool CreateAutostartTask() {
+    wchar_t user[256] = {}, domain[256] = {};
+    GetEnvironmentVariableW(L"USERNAME", user, 256);
+    GetEnvironmentVariableW(L"USERDOMAIN", domain, 256);
+    std::wstring who = XmlEscape(std::wstring(domain) + L"\\" + user);
+    std::wstring exe = ExePath();
+    std::wstring dir = exe.substr(0, exe.find_last_of(L'\\'));
+    std::wstring xml =
+        L"<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n"
+        L"<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n"
+        L"  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>" + who + L"</UserId><Delay>PT10S</Delay></LogonTrigger></Triggers>\n"
+        L"  <Principals><Principal id=\"Author\"><UserId>" + who + L"</UserId><LogonType>InteractiveToken</LogonType>"
+        L"<RunLevel>LeastPrivilege</RunLevel></Principal></Principals>\n"
+        L"  <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>"
+        L"<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><Enabled>true</Enabled></Settings>\n"
+        L"  <Actions Context=\"Author\"><Exec><Command>" + XmlEscape(exe) + L"</Command><WorkingDirectory>" + XmlEscape(dir) +
+        L"</WorkingDirectory></Exec></Actions>\n"
+        L"</Task>\n";
+    wchar_t tmpDir[MAX_PATH], tmpFile[MAX_PATH];
+    if (!GetTempPathW(MAX_PATH, tmpDir) || !GetTempFileNameW(tmpDir, L"bht", 0, tmpFile)) return false;
+    HANDLE f = CreateFileW(tmpFile, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    DWORD written = 0;
+    const wchar_t bom = 0xFEFF;
+    bool ok = WriteFile(f, &bom, sizeof(bom), &written, nullptr) &&
+              WriteFile(f, xml.c_str(), (DWORD)(xml.size() * sizeof(wchar_t)), &written, nullptr);
+    CloseHandle(f);
+    bool created = ok && RunHidden(Schtasks(L"/create /tn \"" + std::wstring(kTaskName) + L"\" /xml \"" + tmpFile + L"\" /f")) == 0;
+    DeleteFileW(tmpFile);
+    return created;
+}
+
+bool AutostartEnabled() { return g_autostartTask || RunValueMatches(); }
+
+void SetAutostart(bool on) {
+    if (on) {
+        if (CreateAutostartTask()) {
+            g_autostartTask = true;
+            DeleteRunValue();
+        } else {
+            WriteRunValue();  // the task could not be created: the Run key is better than nothing
+        }
+    } else {
+        if (g_autostartTask || QueryAutostartTask()) DeleteAutostartTask();
+        g_autostartTask = false;
+        DeleteRunValue();
+    }
+}
+
+// At startup: find out whether the task exists, and move a Run value over to it.
+void InitAutostart() {
+    g_autostartTask = QueryAutostartTask();
+    if (!g_autostartTask && RunValueMatches() && CreateAutostartTask()) {
+        g_autostartTask = true;
+        DeleteRunValue();
+    }
 }
 
 // ---- icon rendering ---------------------------------------------------------------------------
@@ -1420,6 +1533,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     g_lightTaskbar = ReadLightTaskbar();
     ApplyMenuTheme(g_lightTaskbar);
     g_taskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarCreated");
+    InitAutostart();
 
     WNDCLASSEXW wc{ sizeof(wc) };
     wc.lpfnWndProc = WndProc;

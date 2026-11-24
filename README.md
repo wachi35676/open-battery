@@ -300,7 +300,8 @@ These reports cover the listed connection modes and behaviors; battery confirmat
 
 1. Build it (see [Build](#build)): `build-msvc.cmd` with Visual Studio, or `make` / `build.bat` with MinGW-w64.
 2. Copy the exe anywhere, for example `%LOCALAPPDATA%\Programs\WirelessBattery\`, and run it. No administrator rights or runtime are needed.
-3. Turn on **Start with Windows** in **Settings → General** (right-click the levels to open settings). For the headsets that use HeadsetControl, put `headsetcontrol.exe` next to the exe; check your device's table entry and [Limitations](#limitations) for any setup or firmware requirements.
+3. Turn on **Start with Windows** in **Settings → General** (right-click the levels to open settings). It creates a per-user
+   logon task in Task Scheduler (no administrator rights), see [Limitations](#limitations). For the headsets that use HeadsetControl, put `headsetcontrol.exe` next to the exe; check your device's table entry and [Limitations](#limitations) for any setup or firmware requirements.
 
 `installer\build-installer.ps1` can still package a per-user installer with Inno Setup if you want one.
 
@@ -397,6 +398,11 @@ Finalmouse and the shared Kysona/Pulsar/ATK/G-Wolves protocols. Bluetooth/UPower
 the remaining vendors are planned follow-up phases.
 
 ## Limitations
+
+- **Start with Windows is a Task Scheduler task, not a Run key entry.** On Windows 11 build 26300, which launched every signed Run
+  entry at each boot, an unsigned program in `HKCU\...\Run` was never started (it did not even reach Settings → Apps → Startup).
+  So *Start with Windows* creates a per-user logon task named `BatteryHub autostart` (ten seconds after you sign in), and moves an
+  old Run value over to it when the app starts. If a task cannot be created, the Run value is used instead.
 
 - **Crowded taskbars:** with a very full centered Windows 11 taskbar, the app buttons can reach the widget. On Windows 10 the task-button area is narrowed automatically.
 - **Phones:** read from a file Phone Link writes for the Start menu companion card, which is not a documented API and may change with Phone Link updates. The phone shows while Phone Link reports it as connected; a card older than 3 hours is shown dimmed. The card also says when the phone is charging, which shows as the charging bolt.

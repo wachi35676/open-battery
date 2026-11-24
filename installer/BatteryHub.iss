@@ -51,10 +51,10 @@ Name: "{autoprograms}\BatteryHub"; Filename: "{app}\BatteryHub.exe"
 
 [Run]
 Filename: "{app}\BatteryHub.exe"; Description: "Start BatteryHub now"; Flags: nowait postinstall skipifsilent; Check: not IsUpdate
-Filename: "https://ko-fi.com/krisgfx"; Description: "Enjoying BatteryHub? Support it on Ko-fi"; Flags: shellexec postinstall unchecked skipifsilent nowait runasoriginaluser
 
 [UninstallRun]
 Filename: "{app}\BatteryHub.exe"; Parameters: "--quit"; Flags: runhidden waituntilterminated; RunOnceId: "QuitApp"
+Filename: "{sys}\schtasks.exe"; Parameters: "/delete /tn ""BatteryHub autostart"" /f"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveAutostartTask"
 
 [Code]
 const

@@ -457,17 +457,17 @@ using SetCompositionFn = BOOL(WINAPI*)(HWND, CompositionData*);
 
 // The lighter blur behind the window (undocumented SetWindowCompositionAttribute, used by many taskbar
 // tools), with a thin tint so text stays readable. state 4 = acrylic blur behind, 0 = off.
-void SetGlass(HWND wnd, bool on, bool light) {
+void SetGlass(HWND wnd, bool on, bool light, bool frosted) {
     static auto fn = (SetCompositionFn)GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetWindowCompositionAttribute");
     if (!fn) return;
-    DWORD tint = light ? 0x55F3F3F3 : 0x40201E1C;  // AABBGGRR
+    DWORD tint = frosted ? (light ? 0xB8F3F3F3 : 0xA6201E1C) : (light ? 0x55F3F3F3 : 0x40201E1C);  // AABBGGRR
     AccentPolicy a{ on ? 4 : 0, 2, tint, 0 };
     CompositionData d{ 19, &a, sizeof(a) };  // 19 = WCA_ACCENT_POLICY
     fn(wnd, &d);
 }
 }  // namespace
 
-void ApplyBackdrop(HWND wnd, bool light, Backdrop backdrop) {
+void ApplyBackdrop(HWND wnd, bool light, Backdrop backdrop, bool activate) {
     BOOL dark = light ? FALSE : TRUE;
     DwmSetWindowAttribute(wnd, kDwmDarkMode, &dark, sizeof(dark));
     int corners = 2;  // round
@@ -476,8 +476,9 @@ void ApplyBackdrop(HWND wnd, bool light, Backdrop backdrop) {
     DwmExtendFrameIntoClientArea(wnd, &m);
     int type = backdrop == Backdrop::Mica ? 2 : backdrop == Backdrop::Acrylic ? 3 : 1;
     DwmSetWindowAttribute(wnd, kDwmBackdrop, &type, sizeof(type));
-    SetGlass(wnd, backdrop == Backdrop::Glass, light);
-    SetWindowPos(wnd, nullptr, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
+    SetGlass(wnd, backdrop == Backdrop::Glass || backdrop == Backdrop::Frosted, light, backdrop == Backdrop::Frosted);
+    SetWindowPos(wnd, nullptr, 0, 0, 0, 0,
+                 SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | (activate ? 0 : SWP_NOACTIVATE));
 }
 
 bool BackdropSupported(HWND wnd) {

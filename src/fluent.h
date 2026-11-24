@@ -99,10 +99,14 @@ void IconButton(Painter& p, const Palette& c, D2D1_RECT_F r, wchar_t g, float gl
 
 // Window backdrops. Mica and Acrylic are the system materials (their opacity is fixed by Windows);
 // Glass is a lighter blur of what is behind the window with a thin tint, for more transparency.
-enum class Backdrop { Mica = 0, Acrylic = 1, Glass = 2 };
+// Glass, Frosted and Solid also work on a window that is never active (a desktop widget), where Windows
+// draws Mica and Acrylic as a flat grey: Glass is a light blur of what is behind it, Frosted a stronger
+// tint of the same, Solid an opaque fill the window draws itself.
+enum class Backdrop { Mica = 0, Acrylic = 1, Glass = 2, Frosted = 3, Solid = 4 };
 // DWM shows Mica's plain grey fallback instead of the wallpaper-tinted material unless this runs with an
 // activating frame change both before the window is shown and again after it is up.
-void ApplyBackdrop(HWND wnd, bool light, Backdrop backdrop);
+// activate = false (a window that must not take focus) skips the activating frame change.
+void ApplyBackdrop(HWND wnd, bool light, Backdrop backdrop, bool activate = true);
 bool BackdropSupported(HWND wnd);  // Windows 11 22H2 and later
 UINT WindowDpi(HWND wnd);
 bool AnimationsEnabled();

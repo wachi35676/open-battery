@@ -50,6 +50,25 @@ a leader line to its level.
 - The footer has the summary, *Refresh* and *Settings*. Esc or a click elsewhere closes the panel.
 - *Panel background* in settings picks Mica, Acrylic, or Clear glass, which is more see-through.
 
+### Desktop widget
+
+![The desktop widget on a second monitor, dark and light](docs/images/widget.png)
+
+The same panel as a widget that stays on your desktop, for example on a second monitor that is usually empty. Turn it on
+in **Settings → Desktop**.
+
+- **Drag it anywhere:** grab it by any part that is not a device or a button. The place is remembered, also across
+  restarts and if its monitor is unplugged (it then goes to the second monitor, or the corner of the only one).
+- **Fixed sizes:** *Small*, *Medium*, *Large*, *Extra large* and *Huge* are 75%, 100%, 125%, 150% and 200% of the panel.
+  The whole picture scales with the window, so it fits every size exactly.
+- **Click a device** for its battery history, or use *Refresh* and *Settings* in the footer. A right click on the widget opens its
+  settings page. *Lock position* stops it being dragged; *Keep on top* puts it above other windows, otherwise it is an
+  ordinary window that stays where it is. *Reset position* moves it back to the second monitor.
+- **Same look, same theme:** it follows light and dark mode live, and the charging cables pulse as in the panel.
+- **Background:** *Clear glass* (a blurred copy of your wallpaper), *Frosted glass* (the same with a stronger tint) or
+  *Solid*. It does not use Mica: Windows draws Mica and Acrylic as a flat grey on a window that never takes focus, and a
+  widget never does.
+
 ### Settings
 
 ![The Taskbar and Devices settings pages](docs/images/settings-taskbar.png)
@@ -64,6 +83,7 @@ app. Changes apply at once, and it follows light and dark mode as Windows switch
 
   ![A device card opened on the Devices page](docs/images/settings-devices.png)
 
+- **Desktop:** the desktop widget: on or off, size, background, keep on top, lock position and reset position.
 - **General:** start with Windows, how often to check, battery history recording, the panel background, language (or
   add your own), refresh now, and exit.
 

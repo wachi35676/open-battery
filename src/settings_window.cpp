@@ -286,6 +286,23 @@ void DevicesPage(Ctx& k) {
     }
 }
 
+void DesktopPage(Ctx& k) {
+    const State& s = g_state;
+    ToggleCard(k, 0xF246, T(L"Show on the desktop"), T(L"The click panel as a widget you can place anywhere"), s.desktop,
+               [] { Act(Action::Desktop, !g_state.desktop); });
+    ComboCard(k, 0xE740, T(L"Size"), T(L"The whole widget scales to the size you pick"), s.desktopSize,
+              [](int i) { Act(Action::DesktopSize, i); }, s.desktop);
+    ComboCard(k, 0xE771, T(L"Background"), T(L"Glass shows your wallpaper blurred behind it"), s.desktopBackground,
+              [](int i) { Act(Action::DesktopBackground, i); }, s.desktop);
+    Section(k, T(L"Position"));
+    ToggleCard(k, 0xE718, T(L"Keep on top"), T(L"Stay above other windows"), s.desktopOnTop,
+               [] { Act(Action::DesktopOnTop, !g_state.desktopOnTop); }, s.desktop);
+    ToggleCard(k, 0xE72E, T(L"Lock position"), T(L"Stop it from being dragged by accident"), s.desktopLocked,
+               [] { Act(Action::DesktopLocked, !g_state.desktopLocked); }, s.desktop);
+    ButtonCard(k, 0xE7A7, T(L"Reset position"), T(L"Move it back to the second monitor"), T(L"Reset"),
+               [] { Act(Action::DesktopReset); });
+}
+
 void GeneralPage(Ctx& k) {
     const State& s = g_state;
     ToggleCard(k, 0xE768, T(L"Start with Windows"), T(L"Open BatteryHub when you sign in"), s.autostart,
@@ -317,7 +334,8 @@ void AboutPage(Ctx& k) {
 
 struct NavItem { Page page; wchar_t glyph; const wchar_t* label; };
 const NavItem kNav[] = { { Page::Taskbar, 0xE7F4, L"Taskbar" }, { Page::Devices, 0xE772, L"Devices" },
-                         { Page::General, 0xE713, L"General" }, { Page::About, 0xE946, L"About" } };
+                         { Page::Desktop, 0xF246, L"Desktop" }, { Page::General, 0xE713, L"General" },
+                         { Page::About, 0xE946, L"About" } };
 
 const wchar_t* PageTitle(Page p) {
     for (auto& n : kNav)
@@ -393,6 +411,7 @@ void Draw() {
         switch (g_page) {
             case Page::Taskbar: TaskbarPage(k); break;
             case Page::Devices: DevicesPage(k); break;
+            case Page::Desktop: DesktopPage(k); break;
             case Page::General: GeneralPage(k); break;
             case Page::About: AboutPage(k); break;
         }

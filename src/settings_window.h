@@ -36,15 +36,19 @@ struct State {
     // Devices
     std::vector<Device> devices;
     // General
+    // Desktop widget
+    bool desktop = false, desktopOnTop = false, desktopLocked = false;
+    Choice desktopSize, desktopBackground;
     bool autostart = false, recordHistory = true;
     Choice poll, language, panel;
     std::wstring version;
 };
 
-enum class Page { Taskbar = 0, Devices, General, About };
+enum class Page { Taskbar = 0, Devices, Desktop, General, About };
 
 enum class Action {
     ShowAs, Style, Position, Monitor, Background, BrandColors, DimSleeping, HideAsleep, ShowDisconnected,
+    Desktop, DesktopSize, DesktopOnTop, DesktopLocked, DesktopBackground, DesktopReset,
     Autostart, RecordHistory, Poll, Language, AddLanguage, Panel, Refresh, Exit, OpenProject,
     DeviceShown, DeviceLeft, DeviceRight, DeviceRename, DeviceResetName, DeviceAlert, DeviceHistory
 };

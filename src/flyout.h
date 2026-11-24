@@ -29,7 +29,7 @@ struct Model {
     bool light = false;           // follows the taskbar theme
     fluent::Backdrop backdrop = fluent::Backdrop::Mica;
 };
-enum class Command { Refresh, Settings, History };
+enum class Command { Refresh, Settings, History, DesktopSettings };
 // `key` is the clicked device (Command::History).
 using Handler = std::function<void(Command cmd, const std::wstring& key)>;
 
@@ -42,4 +42,22 @@ bool Visible();
 // True for a short moment after the panel closed because it lost focus: a click on the strip that
 // caused it should not reopen it.
 bool JustClosed();
+
+// ---- the desktop widget -----------------------------------------------------------------------
+// The same panel as a window that stays on the desktop: drag it anywhere, pick one of a few fixed sizes.
+// It never takes focus, so Mica cannot be used (Windows draws it flat grey for a window that is not
+// active); model.backdrop should be Glass, Frosted or Solid. A right click sends Command::DesktopSettings.
+constexpr int kWidgetSizes = 5;  // Small, Medium, Large, Extra large, Huge: 75%, 100%, 125%, 150%, 200%
+struct WidgetOptions {
+    bool hasPosition = false;  // false: put it on the second monitor (or in the corner of the only one)
+    int x = 0, y = 0;          // screen position of its top-left corner
+    int size = 1;              // 0 .. kWidgetSizes - 1
+    bool onTop = false;        // above other windows; otherwise it is an ordinary window that stays where it is
+    bool locked = false;       // cannot be dragged
+    std::function<void(int x, int y)> moved;  // after the user dropped it
+};
+bool ShowWidget(HINSTANCE inst, const Model& model, Handler handler, const WidgetOptions& options);
+void UpdateWidget(const Model& model, const WidgetOptions& options);  // readings, theme, size, position
+void HideWidget();
+bool WidgetVisible();
 }

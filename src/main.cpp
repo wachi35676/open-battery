@@ -80,6 +80,13 @@ bool g_widgetBackground = false;  // draw a plate behind the taskbar text (trans
 bool g_stacked = false;      // icon above the percentage (menu option)
 bool g_ringStyle = false;    // charge rings instead of percentages (menu option)
 int g_flyoutBackdrop = 0;    // click panel backdrop: 0 Mica, 1 Acrylic, 2 Clear glass (settings)
+// The desktop widget: the click panel as a window that stays on the desktop (settings, Desktop page).
+bool g_deskWidget = false, g_deskOnTop = false, g_deskLocked = false;
+bool g_deskFailed = false;   // it could not be created: do not retry every second
+bool g_deskPlaced = false;   // it has a saved position
+int g_deskSize = 1;          // 0 .. 4: Small, Medium, Large, Extra large, Huge
+int g_deskBackdrop = 0;      // 0 Clear glass, 1 Frosted glass, 2 Solid
+int g_deskX = 0, g_deskY = 0;
 bool g_leftSide = false;     // left end of a centred Windows 11 taskbar (menu option)
 bool g_brandColors = false;  // off by default; known brands get their color (Razer green, Logitech blue, ...)
 std::atomic<DWORD> g_pollIntervalMs{ 60 * 1000 };  // set from the menu, read by the worker thread
@@ -220,6 +227,16 @@ bool LoadBoolSetting(const wchar_t* name, bool defaultVal) {
     DWORD v = defaultVal ? 1 : 0, sz = sizeof(v);
     RegGetValueW(HKEY_CURRENT_USER, kSettingsKey, name, RRF_RT_REG_DWORD, nullptr, &v, &sz);
     return v != 0;
+}
+
+DWORD LoadDwordSetting(const wchar_t* name, DWORD defaultVal) {
+    DWORD v = defaultVal, sz = sizeof(v);
+    RegGetValueW(HKEY_CURRENT_USER, kSettingsKey, name, RRF_RT_REG_DWORD, nullptr, &v, &sz);
+    return v;
+}
+
+void SaveDwordSetting(const wchar_t* name, DWORD v) {
+    RegSetKeyValueW(HKEY_CURRENT_USER, kSettingsKey, name, REG_DWORD, &v, sizeof(v));
 }
 
 void SaveBoolSetting(const wchar_t* name, bool on) {
@@ -622,6 +639,7 @@ void UpdateWidget() {
 }
 
 void RefreshFlyout();
+void EnsureDesktopWidget();
 
 void OnResults(std::vector<DeviceStatus>& results) {
     std::map<std::wstring, bool> seen;
@@ -673,6 +691,7 @@ void OnResults(std::vector<DeviceStatus>& results) {
 // Makes the actual display match the chosen mode; falls back to tray icons if the taskbar
 // widget cannot be created (e.g. Explorer not ready yet). Called once a second.
 void Reconcile() {
+    EnsureDesktopWidget();
     bool alive = g_wantWidget && widget::Alive();
     if (g_wantWidget && !alive) alive = widget::Create(g_inst, g_hwnd, WM_WIDGET_CLICK, g_lightTaskbar);
     if (!g_wantWidget) widget::Destroy();
@@ -901,6 +920,7 @@ void OnFlyoutCommand(flyout::Command cmd, const std::wstring& key) {
     switch (cmd) {
         case flyout::Command::Refresh: G435RequestRead(); SetEvent(g_refreshEvt); break;
         case flyout::Command::Settings: OpenSettings(); break;
+        case flyout::Command::DesktopSettings: OpenSettings(settings_window::Page::Desktop); break;
         case flyout::Command::History: {
             auto it = g_entries.find(key);
             if (it != g_entries.end()) battery_history::Show(g_hwnd, key, DisplayName(it->second));
@@ -909,8 +929,54 @@ void OnFlyoutCommand(flyout::Command cmd, const std::wstring& key) {
     }
 }
 
+void SaveDeskSettings() {
+    SaveBoolSetting(L"DesktopWidget", g_deskWidget);
+    SaveBoolSetting(L"DesktopWidgetOnTop", g_deskOnTop);
+    SaveBoolSetting(L"DesktopWidgetLocked", g_deskLocked);
+    SaveBoolSetting(L"DesktopWidgetPlaced", g_deskPlaced);
+    SaveDwordSetting(L"DesktopWidgetSize", (DWORD)g_deskSize);
+    SaveDwordSetting(L"DesktopWidgetBackdrop", (DWORD)g_deskBackdrop);
+    SaveDwordSetting(L"DesktopWidgetX", (DWORD)g_deskX);
+    SaveDwordSetting(L"DesktopWidgetY", (DWORD)g_deskY);
+}
+
+flyout::WidgetOptions DeskOptions() {
+    flyout::WidgetOptions o;
+    o.hasPosition = g_deskPlaced;
+    o.x = g_deskX;
+    o.y = g_deskY;
+    o.size = g_deskSize;
+    o.onTop = g_deskOnTop;
+    o.locked = g_deskLocked;
+    o.moved = [](int x, int y) {  // dropped by the user, or put in its first place
+        g_deskX = x;
+        g_deskY = y;
+        g_deskPlaced = true;
+        SaveDeskSettings();
+    };
+    return o;
+}
+
+// The widget never has focus, so it cannot use Mica or Acrylic: it gets glass, frosted glass or a solid fill.
+flyout::Model BuildDeskModel() {
+    flyout::Model m = BuildFlyoutModel();
+    m.backdrop = g_deskBackdrop == 1 ? fluent::Backdrop::Frosted : g_deskBackdrop == 2 ? fluent::Backdrop::Solid : fluent::Backdrop::Glass;
+    return m;
+}
+
+// Once a second: brings the widget up when it is wanted (also at startup), takes it away when it is not.
+void EnsureDesktopWidget() {
+    if (!g_deskWidget) {
+        if (flyout::WidgetVisible()) flyout::HideWidget();
+        return;
+    }
+    if (flyout::WidgetVisible() || g_deskFailed) return;
+    if (!flyout::ShowWidget(g_inst, BuildDeskModel(), OnFlyoutCommand, DeskOptions())) g_deskFailed = true;
+}
+
 void RefreshFlyout() {
     if (flyout::Visible()) flyout::Update(BuildFlyoutModel());
+    if (flyout::WidgetVisible()) flyout::UpdateWidget(BuildDeskModel(), DeskOptions());
     settings_window::Refresh();
 }
 
@@ -1003,6 +1069,11 @@ settings_window::State BuildSettingsState() {
         st.language.options.push_back(l.name);
     }
     st.panel = { { L"Mica", L"Acrylic", T(L"Clear glass") }, g_flyoutBackdrop };
+    st.desktop = g_deskWidget;
+    st.desktopOnTop = g_deskOnTop;
+    st.desktopLocked = g_deskLocked;
+    st.desktopSize = { { T(L"Small"), T(L"Medium"), T(L"Large"), T(L"Extra large"), T(L"Huge") }, g_deskSize };
+    st.desktopBackground = { { T(L"Clear glass"), T(L"Frosted glass"), T(L"Solid") }, g_deskBackdrop };
     st.version = appversion::wide;
     return st;
 }
@@ -1039,6 +1110,17 @@ void OnSettingsAction(settings_window::Action a, int v, const std::wstring& key)
             g_flyoutBackdrop = std::clamp(v, 0, 2);
             RegSetKeyValueW(HKEY_CURRENT_USER, kSettingsKey, L"FlyoutBackdrop", REG_DWORD, &g_flyoutBackdrop, sizeof(DWORD));
             break;
+        case A::Desktop:
+            g_deskWidget = v != 0;
+            g_deskFailed = false;
+            SaveDeskSettings();
+            EnsureDesktopWidget();
+            break;
+        case A::DesktopSize: g_deskSize = std::clamp(v, 0, flyout::kWidgetSizes - 1); SaveDeskSettings(); break;
+        case A::DesktopOnTop: g_deskOnTop = v != 0; SaveDeskSettings(); break;
+        case A::DesktopLocked: g_deskLocked = v != 0; SaveDeskSettings(); break;
+        case A::DesktopBackground: g_deskBackdrop = std::clamp(v, 0, 2); SaveDeskSettings(); break;
+        case A::DesktopReset: g_deskPlaced = false; SaveDeskSettings(); break;
         case A::Refresh: G435RequestRead(); SetEvent(g_refreshEvt); break;
         case A::Exit: settings_window::Close(); DestroyWindow(g_hwnd); return;
         case A::OpenProject:
@@ -1374,6 +1456,14 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
             g_flyoutBackdrop = 1;  // the earlier "Mica background" option was off
     }
     widget::SetRingStyle(g_ringStyle);
+    g_deskWidget = LoadBoolSetting(L"DesktopWidget", false);
+    g_deskOnTop = LoadBoolSetting(L"DesktopWidgetOnTop", false);
+    g_deskLocked = LoadBoolSetting(L"DesktopWidgetLocked", false);
+    g_deskPlaced = LoadBoolSetting(L"DesktopWidgetPlaced", false);
+    g_deskSize = (int)std::min<DWORD>(LoadDwordSetting(L"DesktopWidgetSize", 1), flyout::kWidgetSizes - 1);
+    g_deskBackdrop = (int)std::min<DWORD>(LoadDwordSetting(L"DesktopWidgetBackdrop", 0), 2);
+    g_deskX = (int)LoadDwordSetting(L"DesktopWidgetX", 0);
+    g_deskY = (int)LoadDwordSetting(L"DesktopWidgetY", 0);
     g_leftSide = LoadLeftSide();
     widget::SetLeftSide(g_leftSide);
     widget::SetBackground(g_widgetBackground);  // remembered by the widget across re-creation

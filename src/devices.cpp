@@ -99,6 +99,7 @@ std::vector<DeviceStatus> PollAllDevices() {
     PollNiceboy(ctx);    // exact 248A:FA02 match, also before the Ajazz / Delux pollers
     PollMchoseModern(ctx);
     PollMchoseHeadset(ctx);
+    PollMchoseV9Turbo(ctx);
     PollVgn(ctx);
     PollMchoseKeyboard(ctx);  // 3837:3033 receiver, before the generic fallbacks
     PollMiscMice(ctx);
